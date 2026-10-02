@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 import base64
 import ctypes
@@ -33,17 +33,36 @@ REFRESH_MS = 30_000  # период обновления данных
 TAIL_BYTES = 512 * 1024  # сколько читать с конца лог-файла Codex
 MARGIN = 25  # отступ панели от краёв рабочей области, логические px
 
-# светлая палитра
-BG, FG, DIM, TRACK = "#ffffff", "#1d1d1f", "#86868b", "#ececf0"
-GREEN, AMBER, RED = "#34c759", "#ff9f0a", "#ff3b30"
+GREEN, AMBER, RED = "#34c759", "#ff9f0a", "#ff3b30"  # цвета полосок - одинаковые в обеих темах
+THEMES = {
+    "light": {"BG": "#ffffff", "FG": "#1d1d1f", "DIM": "#86868b", "TRACK": "#ececf0",
+              "ALERT_BG": {AMBER: "#fff4e0", RED: "#ffeceb"},
+              "BADGES": {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")},
+              "BORDER": 0xFFFFFFFF},  # рамка окна - цвет Windows по умолчанию
+    "dark": {"BG": "#1f1f23", "FG": "#f2f2f5", "DIM": "#8e8e96", "TRACK": "#34343a",
+             "ALERT_BG": {AMBER: "#3a2f17", RED: "#3e2222"},
+             "BADGES": {"Claude": ("#3d2a23", "#f0a587"), "Codex": ("#17332a", "#5fd3ae")},
+             "BORDER": 0x00403A3A},  # COLORREF 0x00BBGGRR - тёмно-серая рамка вместо светлой
+}
+SCALES = (1.0, 1.25)  # масштаб интерфейса: как сейчас и крупнее
+THEME, SCALE = "light", 1.0  # текущие тема и масштаб, задаются из state.json и в настройках
+
+
+def apply_theme(name):
+    """Переключить палитру: цвета - глобальные, их читают все функции отрисовки."""
+    global THEME, BG, FG, DIM, TRACK, ALERT_BG, BADGES
+    THEME = name
+    t = THEMES[name]
+    BG, FG, DIM, TRACK, ALERT_BG, BADGES = t["BG"], t["FG"], t["DIM"], t["TRACK"], t["ALERT_BG"], t["BADGES"]
+
+
+apply_theme("light")
 DOTS = {"Claude": "#d97757", "Codex": "#10a37f"}  # цветные точки у имени провайдера
 THRESHOLDS = (80, 95)  # при каких % заполнения окна показывать уведомление
-ALERT_BG = {AMBER: "#fff4e0", RED: "#ffeceb"}  # фон подсвеченной строки по цвету полоски
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
              (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
 GEAR, REFRESH, CLOCK = "\ue713", "\ue72c", "\ue823"  # шестерёнка, обновление, часы - одинаковые в обоих шрифтах
-BADGES = {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")}  # плашка тарифа: фон, текст
 
 # --- локализация -------------------------------------------------------------------------------
 LANGS = {"ru": "Русский", "en": "English", "zh": "中文"}
@@ -53,19 +72,19 @@ STRINGS = {
            "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
            "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}",
-           "language": "Язык", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
+           "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
     "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
            "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
            "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
            "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}",
-           "language": "Language", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
+           "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
     "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
            "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
            "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
            "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置",
-           "language": "语言", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
+           "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
 }
 LANG = "ru"  # текущий язык, задаётся из state.json и в настройках
 
@@ -82,6 +101,7 @@ def win_name(key):
 
 def F(size, bold=False, lang=None):
     """Шрифт интерфейса: для китайского - Microsoft YaHei UI (в Segoe UI нет иероглифов)."""
+    size = round(size * SCALE)
     if (lang or LANG) == "zh":
         return ("Microsoft YaHei UI", size, "bold") if bold else ("Microsoft YaHei UI", size)
     return ("Segoe UI Semibold", size) if bold else ("Segoe UI", size)
@@ -273,10 +293,10 @@ def load_plan(reader):
 
 
 # --- картинки ----------------------------------------------------------------------------------
-def rounded_bar(pct, w, h, color, bg=BG):
+def rounded_bar(pct, w, h, color, bg=None):
     """Гладкая полоска со скруглёнными концами: рисуем в 4x и уменьшаем (антиалиасинг)."""
     k = 4
-    img = Image.new("RGB", (w * k, h * k), bg)
+    img = Image.new("RGB", (w * k, h * k), bg or BG)
     d = ImageDraw.Draw(img)
     r = h * k // 2
     d.rounded_rectangle([0, 0, w * k - 1, h * k - 1], radius=r, fill=TRACK)
@@ -297,12 +317,12 @@ def icon_font(px):
 
 def flatten(img, size, bg):
     """RGBA-картинка в 4x -> RGB нужного размера на фоне панели."""
-    out = Image.new("RGB", img.size, bg)
+    out = Image.new("RGB", img.size, bg or BG)
     out.paste(img, mask=img)
     return out.resize((size, size), Image.LANCZOS)
 
 
-def pin_image(pinned, size, bg=BG):
+def pin_image(pinned, size, bg=None):
     """Значок пина: откреплён - контур с наклоном 45°, закреплён - заливка, игла вертикально вниз."""
     k = 4  # рисуем крупно и уменьшаем - гладкие края после поворота
     img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
@@ -318,7 +338,7 @@ def pin_image(pinned, size, bg=BG):
     return flatten(img, size, bg)
 
 
-def glyph_image(glyph, color, size, bg=BG):
+def glyph_image(glyph, color, size, bg=None):
     """Значок из шрифта значков Windows (шестерёнка, стрелка обновления)."""
     k = 4
     img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
@@ -361,13 +381,13 @@ class Widget:
     ANIM_FRAMES, ANIM_MS = 12, 25  # анимация полоски: ~0.3 с
 
     def __init__(self):
-        global LANG
+        global LANG, SCALE
         self.root = tk.Tk()
         self.root.withdraw()  # на старте показываем только иконку в трее
         self.root.overrideredirect(True)  # без рамки и заголовка
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
-        self.s = self.root.winfo_fpixels("1i") / 96  # коэффициент масштабирования экрана
+        self.dpi = self.root.winfo_fpixels("1i") / 96  # коэффициент масштабирования экрана
         self.card = None  # рамка с содержимым: строится один раз, дальше обновляется на месте
         self.layout_key = None  # структура панели - пересборка только при её изменении
         self.refs = {}  # ссылки на элементы, которые меняются при обновлении
@@ -382,7 +402,8 @@ class Widget:
         self.alerted = {}  # (провайдер, окно) -> последний порог, о котором уже уведомили
         self.view = "limits"  # что показывает панель: limits или settings
         self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
-        self.ip = self.px(4)  # общий внутренний отступ слева и справа: по нему выровнены все строки
+        self.ip = 0  # общий внутренний отступ слева и справа (задаётся при сборке - зависит от масштаба)
+        self.hwnd = None  # окно Windows - для скругления и цвета рамки
         self.bar_w = self.px(150)  # ширина полоски, подгоняется под ширину заголовков
         self.heads = []  # строки-заголовки (шапка, провайдеры) - по ним считается ширина панели
         try:
@@ -391,6 +412,9 @@ class Widget:
             state = {}
         self.pinned = state.get("pinned", False)
         LANG = state.get("lang") if state.get("lang") in LANGS else "ru"
+        SCALE = state.get("scale") if state.get("scale") in SCALES else 1.0
+        apply_theme(state.get("theme") if state.get("theme") in THEMES else "light")
+        self.root.configure(bg=BG)  # фон окна - уже сохранённой темы
         self.root.bind("<Escape>", lambda e: self.hide())
         self.root.bind("<FocusOut>", self._on_focus_out)
 
@@ -414,7 +438,7 @@ class Widget:
         )
 
     def px(self, v):
-        return int(v * self.s)
+        return int(v * self.dpi * SCALE)
 
     def _poll(self):
         while not self.cmds.empty():
@@ -450,10 +474,11 @@ class Widget:
         self.refresh()
         self.root.deiconify()
         if not self.rounded:  # скругление окна средствами Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = ROUND)
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            self.hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
             pref = ctypes.c_int(2)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(self.hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
             self.rounded = True
+            self._border()
         if focus:
             self.root.focus_force()
 
@@ -466,7 +491,7 @@ class Widget:
     def _save_state(self):
         try:
             TOLLGATE_DIR.mkdir(exist_ok=True)
-            STATE_FILE.write_text(json.dumps({"pinned": self.pinned, "lang": LANG}), encoding="utf-8")
+            STATE_FILE.write_text(json.dumps({"pinned": self.pinned, "lang": LANG, "theme": THEME, "scale": SCALE}), encoding="utf-8")
         except OSError:
             pass  # не сохранилось - настройки работают до перезапуска
 
@@ -487,6 +512,28 @@ class Widget:
         self._save_state()
         self.icon.menu = self._menu()
         self.icon.update_menu()
+        self.refresh()
+
+    def _border(self):
+        """Цвет рамки окна под тему (DWMWA_BORDER_COLOR, Windows 11; на Windows 10 просто игнорируется)."""
+        if self.hwnd:
+            color = ctypes.c_uint(THEMES[THEME]["BORDER"])
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(self.hwnd, 34, ctypes.byref(color), ctypes.sizeof(color))
+
+    def set_theme(self, name):
+        apply_theme(name)
+        self.root.configure(bg=BG)
+        self._border()
+        self._save_state()
+        self.refresh()
+
+    def set_scale(self, scale):
+        global SCALE
+        if self.limits_size:  # настройки откроются в размере панели лимитов уже нового масштаба
+            k = scale / SCALE
+            self.limits_size = (round(self.limits_size[0] * k), round(self.limits_size[1] * k))
+        SCALE = scale
+        self._save_state()
         self.refresh()
 
     def _auto_hide(self):
@@ -588,17 +635,25 @@ class Widget:
             row += 1
         return row
 
-    def _settings(self, row):
-        """Настройки в том же окне: пока - язык интерфейса."""
-        tk.Label(self.card, text=T("language"), bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
-        langs = tk.Frame(self.card, bg=BG)
-        langs.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(6), 0))
-        for code, title in LANGS.items():
-            on = code == LANG
-            b = tk.Label(langs, text=title, bg=FG if on else TRACK, fg=BG if on else FG, font=F(9, lang=code),
+    def _choice(self, row, title, options, current, command, last=False):
+        """Группа настроек: подпись и ряд переключателей. options - [(значение, текст, язык шрифта)]."""
+        tk.Label(self.card, text=title, bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
+        line = tk.Frame(self.card, bg=BG)
+        # компактные отступы - три группы помещаются в высоту панели лимитов, окно не растёт
+        line.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(3), 0 if last else self.px(8)))
+        for value, text, lang in options:
+            on = value == current
+            b = tk.Label(line, text=text, bg=FG if on else TRACK, fg=BG if on else FG, font=F(9, lang=lang),
                          padx=self.px(12), pady=self.px(4), cursor="hand2")
             b.pack(side="left", padx=(0, self.px(6)))
-            b.bind("<Button-1>", lambda e, c=code: self.set_lang(c))
+            b.bind("<Button-1>", lambda e, v=value: command(v))
+        return row + 2
+
+    def _settings(self, row):
+        """Настройки в том же окне: язык, тема, масштаб."""
+        row = self._choice(row, T("language"), [(c, t, c) for c, t in LANGS.items()], LANG, self.set_lang)
+        row = self._choice(row, T("theme"), [(n, T(n), None) for n in THEMES], THEME, self.set_theme)
+        self._choice(row, T("scale"), [(k, f"{round(k * 100)}%", "en") for k in SCALES], SCALE, self.set_scale, last=True)
 
     def _rebuild(self, data):
         """Полная сборка панели - только при смене структуры (вид, язык, набор окон)."""
@@ -606,7 +661,7 @@ class Widget:
             if r["anim"]:
                 self.root.after_cancel(r["anim"])
         self.refs, self.rows, self.heads = {}, [], []
-        self.bar_w = self.px(150)
+        self.ip, self.bar_w = self.px(4), self.px(150)
         # собираем новую рамку, пока старая на экране, и подменяем одним шагом
         old_card = self.card
         self.card = tk.Frame(self.root, bg=BG, padx=self.px(12), pady=self.px(14))
@@ -614,8 +669,10 @@ class Widget:
         if self.view == "settings":
             self._settings(row)
             self.card.grid_columnconfigure(3, weight=1)  # шапка тянется на всю ширину фиксированного окна
-            if self.limits_size:  # тот же размер, что у панели лимитов - окно не прыгает
-                self.card.configure(width=self.limits_size[0], height=self.limits_size[1])
+            if self.limits_size:  # размер панели лимитов (окно не прыгает), но не меньше, чем нужно настройкам
+                self.root.update_idletasks()
+                self.card.configure(width=max(self.limits_size[0], self.card.winfo_reqwidth()),
+                                    height=max(self.limits_size[1], self.card.winfo_reqheight()))
                 self.card.grid_propagate(False)
         else:
             self._grid_columns()
@@ -713,8 +770,8 @@ class Widget:
     def _layout_key(self, data):
         """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
         if self.view == "settings":
-            return "settings", LANG
-        return "limits", LANG, tuple((n, tuple(l for l, _, _ in w), bool(p[0]), bool(p[1]), isinstance(a, str))
+            return "settings", LANG, THEME, SCALE
+        return "limits", LANG, THEME, SCALE, tuple((n, tuple(l for l, _, _ in w), bool(p[0]), bool(p[1]), isinstance(a, str))
                                      for n, w, a, p in data)
 
     def refresh(self):
