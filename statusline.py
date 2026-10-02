@@ -1,0 +1,55 @@
+"""Статус-строка Claude Code для Tollgate.
+
+Claude Code вызывает её после каждого ответа и передаёт в stdin JSON сессии, включая rate_limits.
+Скрипт сохраняет свежие лимиты в ~/.tollgate/claude-usage.json (их читает tollgate.py)
+и печатает короткую строку с лимитами внизу Claude Code.
+
+python statusline.py --install  - прописать в ~/.claude/settings.json (только если статус-строка не задана)
+"""
+import json
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+OUT = Path.home() / ".tollgate" / "claude-usage.json"
+SETTINGS = Path.home() / ".claude" / "settings.json"
+NAMES = {"five_hour": "5ч", "seven_day": "неделя"}
+
+
+def install():
+    """Добавляет statusLine в настройки Claude Code, чужую статус-строку не перетирает."""
+    sys.stdout.reconfigure(encoding="utf-8")
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8")) if SETTINGS.exists() else {}
+    if settings.get("statusLine"):
+        print("В settings.json уже есть своя статус-строка - не трогаю. Данные Claude будут обновляться реже.")
+        return
+    if SETTINGS.exists():
+        shutil.copy2(SETTINGS, SETTINGS.with_name("settings.json.bak-tollgate"))  # бэкап перед правкой
+    script = Path(__file__).resolve().as_posix()
+    settings["statusLine"] = {"type": "command", "command": f'"{Path(sys.executable).as_posix()}" "{script}"'}
+    SETTINGS.parent.mkdir(exist_ok=True)
+    SETTINGS.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print("Статус-строка Tollgate добавлена в", SETTINGS)
+
+
+def main():
+    data = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
+    limits = data.get("rate_limits")
+    if limits:
+        # атомарная запись: виджет никогда не прочитает наполовину записанный файл
+        OUT.parent.mkdir(exist_ok=True)
+        tmp = OUT.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"saved_at": time.time(), "rate_limits": limits}), encoding="utf-8")
+        os.replace(tmp, OUT)
+    parts = []
+    for key, w in (limits or {}).items():
+        pct = (w or {}).get("used_percentage")
+        if pct is not None:
+            parts.append(f"{NAMES.get(key, key)} {round(pct)}%")
+    sys.stdout.buffer.write(" · ".join(parts).encode("utf-8"))
+
+
+if __name__ == "__main__":
+    install() if "--install" in sys.argv else main()

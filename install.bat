@@ -12,6 +12,9 @@ where python >nul 2>nul || (
 
 python -m pip install --user -r requirements.txt || (pause & exit /b 1)
 
+rem статус-строка Claude Code - свежие лимиты после каждого ответа (свою статус-строку не перетирает)
+python statusline.py --install
+
 rem pythonw из той же установки Python, куда только что поставили зависимости
 for /f "delims=" %%P in ('python -c "import sys,os;print(os.path.join(os.path.dirname(sys.executable),'pythonw.exe'))"') do set "PYW=%%P"
 

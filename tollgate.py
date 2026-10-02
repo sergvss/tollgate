@@ -1,9 +1,11 @@
 """Tollgate - лимиты Claude Code и Codex для Windows: иконка в трее + всплывающая панель.
 
-Данные читаются только локально, без сети и без токенов:
-- Claude: ~/.claude.json -> cachedUsageUtilization (кэш, который обновляет сам Claude Code)
+Данные читаются только локально, в сеть ничего не отправляется:
+- Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
+__version__ = "0.1.0"
+
 import base64
 import ctypes
 import ctypes.wintypes
@@ -23,6 +25,9 @@ from PIL import Image, ImageDraw, ImageTk
 HOME = Path.home()
 CLAUDE_JSON = HOME / ".claude.json"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
+TOLLGATE_DIR = HOME / ".tollgate"
+CLAUDE_STATUSLINE = TOLLGATE_DIR / "claude-usage.json"  # пишет statusline.py
+STATE_FILE = TOLLGATE_DIR / "state.json"  # состояние виджета (пин)
 REFRESH_MS = 30_000  # период обновления данных
 TAIL_BYTES = 512 * 1024  # сколько читать с конца лог-файла Codex
 MARGIN = 25  # отступ панели от краёв рабочей области, логические px
@@ -31,6 +36,9 @@ MARGIN = 25  # отступ панели от краёв рабочей обла
 BG, FG, DIM, TRACK = "#ffffff", "#1d1d1f", "#86868b", "#ececf0"
 GREEN, AMBER, RED = "#34c759", "#ff9f0a", "#ff3b30"
 DOTS = {"Claude": "#d97757", "Codex": "#10a37f"}  # цветные точки у имени провайдера
+THRESHOLDS = (80, 95)  # при каких % заполнения окна показывать уведомление
+ALERT_BG = {AMBER: "#fff4e0", RED: "#ffeceb"}  # фон подсвеченной строки по цвету полоски
+PIN, PINNED = "\ue718", "\ue841"  # значки пина из шрифта Segoe MDL2 Assets
 BADGES = {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")}  # плашка тарифа: фон, текст
 
 
@@ -47,7 +55,29 @@ def parse_iso(s):
 
 
 def read_claude():
-    """Возвращает (список окон, время получения данных) из кэша Claude Code."""
+    """Возвращает (список окон, время получения данных): свежее из статус-строки или кэша Claude Code."""
+    try:
+        fresh = read_claude_statusline()
+    except (OSError, ValueError):  # статус-строка не установлена или файл ещё не создан
+        fresh = ([], None)
+    cached = read_claude_cache()
+    return fresh if (fresh[1] or 0) >= (cached[1] or 0) else cached
+
+
+def read_claude_statusline():
+    """Лимиты, которые statusline.py сохраняет после каждого ответа Claude Code."""
+    data = json.loads(CLAUDE_STATUSLINE.read_text(encoding="utf-8"))
+    limits = data.get("rate_limits") or {}
+    windows = []
+    for key, label in (("five_hour", "5ч"), ("seven_day", "неделя")):
+        w = limits.get(key)
+        if w:
+            windows.append((label, w.get("used_percentage") or 0, w.get("resets_at")))
+    return windows, data.get("saved_at")
+
+
+def read_claude_cache():
+    """Лимиты из кэша ~/.claude.json (Claude Code обновляет его редко)."""
     data = json.loads(CLAUDE_JSON.read_text(encoding="utf-8"))
     cache = data.get("cachedUsageUtilization") or {}
     util = cache.get("utilization") or {}
@@ -236,12 +266,19 @@ class Widget:
         self.visible = False
         self.hidden_at = 0.0
         self.rounded = False
+        self.auto_shown = False  # панель открыта уведомлением, а не пользователем
+        self.alerted = {}  # (провайдер, окно) -> последний порог, о котором уже уведомили
+        try:
+            self.pinned = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("pinned", False)
+        except (OSError, ValueError):
+            self.pinned = False
         self.root.bind("<Escape>", lambda e: self.hide())
         self.root.bind("<FocusOut>", self._on_focus_out)
 
         # трей живёт в своём потоке, команды в tk передаются через очередь
         self.cmds = queue.Queue()
         self.icon = pystray.Icon("tollgate", tray_image([None, None]), "Tollgate", pystray.Menu(
+            pystray.MenuItem(f"Tollgate {__version__}", None, enabled=False),  # версия - видно, у кого какая сборка
             pystray.MenuItem("Показать", lambda: self.cmds.put(self.toggle), default=True),
             pystray.MenuItem("Обновить", lambda: self.cmds.put(self.refresh)),
             pystray.MenuItem("Выход", lambda: self.cmds.put(self.quit)),
@@ -249,6 +286,8 @@ class Widget:
         threading.Thread(target=self.icon.run, daemon=True).start()
         self._poll()
         self.refresh()
+        if self.pinned:  # закреплённая панель видна сразу после запуска
+            self.show(focus=False)
 
     def px(self, v):
         return int(v * self.s)
@@ -260,7 +299,7 @@ class Widget:
 
     def _on_focus_out(self, e):
         # клик мимо панели: проверяем чуть позже, что фокус ушёл из приложения совсем
-        if e.widget is self.root:
+        if e.widget is self.root and not self.pinned:
             self.root.after(100, lambda: self.root.focus_get() is None and self.hide())
 
     def toggle(self):
@@ -269,20 +308,25 @@ class Widget:
         elif time.time() - self.hidden_at > 0.4:  # клик по иконке, который и закрыл панель через FocusOut
             self.show()
 
-    def show(self):
-        self.refresh()
+    def _place(self):
+        """Прижать панель к правому нижнему углу рабочей области с отступом MARGIN."""
         self.root.update_idletasks()
         right, bottom = work_area()
         w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
         self.root.geometry(f"+{right - w - self.px(MARGIN)}+{bottom - h - self.px(MARGIN)}")
+
+    def show(self, focus=True):
+        self.visible = True
+        self.auto_shown = not focus
+        self.refresh()
         self.root.deiconify()
         if not self.rounded:  # скругление окна средствами Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = ROUND)
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
             pref = ctypes.c_int(2)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
             self.rounded = True
-        self.root.focus_force()
-        self.visible = True
+        if focus:
+            self.root.focus_force()
 
     def hide(self):
         if self.visible:
@@ -290,11 +334,46 @@ class Widget:
             self.visible = False
             self.hidden_at = time.time()
 
+    def toggle_pin(self):
+        self.pinned = not self.pinned
+        self.auto_shown = False
+        try:
+            TOLLGATE_DIR.mkdir(exist_ok=True)
+            STATE_FILE.write_text(json.dumps({"pinned": self.pinned}), encoding="utf-8")
+        except OSError:
+            pass  # не сохранилось - пин работает до перезапуска
+        self.refresh()
+
+    def _auto_hide(self):
+        if self.auto_shown and not self.pinned:
+            self.hide()
+
+    def _check_alerts(self, data):
+        """Уведомление Windows и показ панели, когда окно лимита переходит порог 80% / 95%."""
+        if not self.icon.visible:  # иконка трея ещё не поднялась - уведомить нечем, проверим в следующий раз
+            return
+        hot = []
+        for name, windows, _, _ in data:
+            for label, pct, left in windows:
+                key = (name, label)
+                level = max((t for t in THRESHOLDS if pct >= t), default=0)
+                if level > self.alerted.get(key, 0):
+                    hot.append(f"{name} {label}: {pct}%" + (f", сброс через {left}" if left and left != "сброшен" else ""))
+                self.alerted[key] = level  # после сброса окна уровень падает и уведомление сработает снова
+        if hot:
+            try:
+                self.icon.notify("\n".join(hot), "Tollgate: лимит заканчивается")
+            except Exception:
+                pass  # уведомления могут быть отключены в Windows - панель всё равно откроется
+            if not self.visible:
+                self.show(focus=False)
+                self.root.after(10_000, self._auto_hide)
+
     def quit(self):
         self.icon.stop()
         self.root.destroy()
 
-    def _section(self, row, title, windows, age, plan):
+    def _section(self, row, title, windows, age, plan, pin=False):
         """Заголовок провайдера и его полоски, возвращает следующую строку грида."""
         head = tk.Frame(self.card, bg=BG)
         head.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, self.px(6)))
@@ -304,19 +383,30 @@ class Widget:
         if name:
             bg, fg = BADGES[title]
             tk.Label(head, text=name, bg=bg, fg=fg, font=("Segoe UI Semibold", 8), padx=self.px(6)).pack(side="left", padx=(self.px(8), 0))
+        if pin:
+            b = tk.Label(head, text=PINNED if self.pinned else PIN, bg=BG, fg=FG if self.pinned else DIM,
+                         font=("Segoe MDL2 Assets", 10), cursor="hand2")
+            b.pack(side="right", padx=(self.px(8), 0))
+            b.bind("<Button-1>", lambda e: self.toggle_pin())
         tk.Label(head, text=age, bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="right")
         row += 1
         if not windows:
             tk.Label(self.card, text="нет данных о лимитах", bg=BG, fg=DIM, font=("Segoe UI", 9)).grid(row=row, column=0, columnspan=4, sticky="w")
             row += 1
         for label, pct, left in windows:
-            img = ImageTk.PhotoImage(rounded_bar(pct, self.px(150), self.px(8), bar_color(pct)))
+            color = bar_color(pct)
+            hot = pct >= THRESHOLDS[0]
+            bg = ALERT_BG[color] if hot else BG
+            img = ImageTk.PhotoImage(rounded_bar(pct, self.px(150), self.px(8), color, bg=bg))
             self.images.append(img)
-            pad = (0, self.px(8))
-            tk.Label(self.card, text=label, bg=BG, fg=DIM, font=("Segoe UI", 9), anchor="w").grid(row=row, column=0, sticky="w", pady=pad)
-            tk.Label(self.card, image=img, bg=BG, bd=0).grid(row=row, column=1, padx=self.px(10), pady=pad)
-            tk.Label(self.card, text=f"{pct}%", bg=BG, fg=FG, font=("Segoe UI Semibold", 9), width=4, anchor="e").grid(row=row, column=2, pady=pad)
-            tk.Label(self.card, text=left, bg=BG, fg=DIM, font=("Segoe UI", 8), width=7, anchor="e").grid(row=row, column=3, pady=pad)
+            pad, ip = (0, self.px(4)), self.px(4)  # внешний отступ между строками, внутренний - для фона подсветки
+            tk.Label(self.card, text=label, bg=bg, fg=color if hot else DIM, font=("Segoe UI Semibold" if hot else "Segoe UI", 9),
+                     anchor="w", padx=ip, pady=ip).grid(row=row, column=0, sticky="nsew", pady=pad)
+            tk.Label(self.card, image=img, bg=bg, bd=0, padx=self.px(10)).grid(row=row, column=1, sticky="nsew", pady=pad)
+            tk.Label(self.card, text=f"{pct}%", bg=bg, fg=color if hot else FG, font=("Segoe UI Semibold", 9), width=4,
+                     anchor="e").grid(row=row, column=2, sticky="nsew", pady=pad)
+            tk.Label(self.card, text=left, bg=bg, fg=color if hot else DIM, font=("Segoe UI", 8), width=7, anchor="e",
+                     padx=ip).grid(row=row, column=3, sticky="nsew", pady=pad)
             row += 1
         if until_text:
             tk.Label(self.card, text=until_text, bg=BG, fg=until_color, font=("Segoe UI", 8)).grid(row=row, column=0, columnspan=4, sticky="w")
@@ -336,12 +426,15 @@ class Widget:
             if i:
                 tk.Frame(self.card, bg=TRACK, height=1).grid(row=row, column=0, columnspan=4, sticky="ew", pady=(self.px(4), self.px(10)))
                 row += 1
-            row = self._section(row, name, windows, age, plan)
+            row = self._section(row, name, windows, age, plan, pin=i == 0)
         # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами
         self.icon.icon = tray_image([max((p for _, p, _ in w), default=None) for _, w, _, _ in data])
         tip = "\n".join(f"{n}: " + (", ".join(f"{l} {p}%" for l, p, _ in w) or "нет данных") for n, w, _, _ in data)
         self.icon.title = tip[:127]  # лимит длины подсказки в Windows
+        if self.visible:  # высота могла измениться - заново прижать к углу
+            self._place()
         self._job = self.root.after(REFRESH_MS, self.refresh)
+        self._check_alerts(data)  # последним: может открыть панель и вложенно вызвать refresh, который переставит таймер
 
 
 def single_instance():
