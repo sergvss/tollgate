@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 import base64
 import ctypes
@@ -27,7 +27,7 @@ CLAUDE_JSON = HOME / ".claude.json"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 TOLLGATE_DIR = HOME / ".tollgate"
 CLAUDE_STATUSLINE = TOLLGATE_DIR / "claude-usage.json"  # пишет statusline.py
-STATE_FILE = TOLLGATE_DIR / "state.json"  # состояние виджета (пин)
+STATE_FILE = TOLLGATE_DIR / "state.json"  # состояние виджета: пин, язык
 REFRESH_MS = 30_000  # период обновления данных
 TAIL_BYTES = 512 * 1024  # сколько читать с конца лог-файла Codex
 MARGIN = 25  # отступ панели от краёв рабочей области, логические px
@@ -41,14 +41,59 @@ ALERT_BG = {AMBER: "#fff4e0", RED: "#ffeceb"}  # фон подсвеченной
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
              (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
+GEAR, REFRESH = "\ue713", "\ue72c"  # шестерёнка и стрелка обновления - одинаковые в обоих шрифтах
 BADGES = {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")}  # плашка тарифа: фон, текст
 
+# --- локализация -------------------------------------------------------------------------------
+LANGS = {"ru": "Русский", "en": "English", "zh": "中文"}
+STRINGS = {
+    "ru": {"no_data": "нет данных", "now": "сейчас", "min_ago": "{n} мин назад",
+           "h_ago": "{n} ч назад", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
+           "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n} дн",
+           "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
+           "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}",
+           "language": "Язык", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
+    "en": {"no_data": "no data", "now": "now", "min_ago": "{n} min ago",
+           "h_ago": "{n} h ago", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
+           "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n} d",
+           "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
+           "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}",
+           "language": "Language", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
+    "zh": {"no_data": "无数据", "now": "刚刚", "min_ago": "{n} 分钟前",
+           "h_ago": "{n} 小时前", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
+           "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n} 天",
+           "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
+           "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置",
+           "language": "语言", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
+}
+LANG = "ru"  # текущий язык, задаётся из state.json и в настройках
 
+
+def T(key, **kw):
+    """Строка интерфейса на текущем языке."""
+    return STRINGS[LANG][key].format(**kw)
+
+
+def win_name(key):
+    """Каноническое имя окна ('5h', '1w', '3h') -> подпись на текущем языке."""
+    return STRINGS[LANG].get(f"win_{key}") or key.replace("h", T("h"))
+
+
+def F(size, bold=False, lang=None):
+    """Шрифт интерфейса: для китайского - Microsoft YaHei UI (в Segoe UI нет иероглифов)."""
+    if (lang or LANG) == "zh":
+        return ("Microsoft YaHei UI", size, "bold") if bold else ("Microsoft YaHei UI", size)
+    return ("Segoe UI Semibold", size) if bold else ("Segoe UI", size)
+
+
+# --- чтение данных -----------------------------------------------------------------------------
 def window_label(minutes):
-    """Человекочитаемое имя окна лимита по его длине в минутах."""
+    """Каноническое имя окна лимита по его длине в минутах: 1w, 1d, 5h."""
     if minutes == 10080:
-        return "неделя"
-    return f"{minutes // 60}ч" if minutes else "?"
+        return "1w"
+    if minutes == 1440:
+        return "1d"
+    return f"{minutes // 60}h" if minutes else "?"
 
 
 def parse_iso(s):
@@ -71,7 +116,7 @@ def read_claude_statusline():
     data = json.loads(CLAUDE_STATUSLINE.read_text(encoding="utf-8"))
     limits = data.get("rate_limits") or {}
     windows = []
-    for key, label in (("five_hour", "5ч"), ("seven_day", "неделя")):
+    for key, label in (("five_hour", "5h"), ("seven_day", "1w")):
         w = limits.get(key)
         if w:
             windows.append((label, w.get("used_percentage") or 0, w.get("resets_at")))
@@ -84,7 +129,7 @@ def read_claude_cache():
     cache = data.get("cachedUsageUtilization") or {}
     util = cache.get("utilization") or {}
     windows = []
-    for key, label in (("five_hour", "5ч"), ("seven_day", "неделя")):
+    for key, label in (("five_hour", "5h"), ("seven_day", "1w")):
         w = util.get(key)
         if w:
             windows.append((label, w.get("utilization") or 0, parse_iso(w.get("resets_at"))))
@@ -159,25 +204,24 @@ def read_codex_plan():
     return CODEX_PLANS.get(plan, (plan or "").capitalize() or None), parse_iso(info.get("chatgpt_subscription_active_until")), True
 
 
+# --- форматирование ----------------------------------------------------------------------------
 def fmt_left(reset_ts):
     """Сколько осталось до сброса: '2д 3ч', '1ч 12м', '5м'."""
     sec = int(reset_ts - time.time())
     d, h, m = sec // 86400, sec % 86400 // 3600, sec % 3600 // 60
     if d:
-        return f"{d}д {h}ч"
-    return f"{h}ч {m}м" if h else f"{m}м"
+        return T("left_dh", d=d, h=h)
+    return T("left_hm", h=h, m=m) if h else T("left_m", m=m)
 
 
 def fmt_age(ts):
     """Возраст данных: 'сейчас', '5 мин назад', '3 ч назад'."""
     if not ts:
-        return "нет данных"
+        return T("no_data")
     mins = int((time.time() - ts) // 60)
     if mins < 1:
-        return "сейчас"
-    return f"{mins} мин назад" if mins < 60 else f"{mins // 60} ч назад"
-
-
+        return T("now")
+    return T("min_ago", n=mins) if mins < 60 else T("h_ago", n=mins // 60)
 
 
 def bar_color(p):
@@ -185,23 +229,28 @@ def bar_color(p):
 
 
 def effective(windows):
-    """Окна -> [(имя, % 0..100, текст до сброса)] с учётом уже сбросившихся окон."""
+    """Окна -> [(имя, % 0..100, текст до сброса или None, если окно уже сбросилось)]."""
     out = []
     for label, pct, reset in windows:
         if reset and reset < time.time():  # окно уже сбросилось, а свежих данных ещё нет
-            out.append((label, 0, "сброшен"))
+            out.append((label, 0, None))
         else:
             out.append((label, max(0, min(100, round(pct))), fmt_left(reset) if reset else ""))
     return out
 
 
 def load(reader):
-    """Безопасное чтение провайдера: (окна, подпись возраста данных)."""
+    """Безопасное чтение провайдера: (окна, время данных или текст ошибки)."""
     try:
         windows, ts = reader()
-        return effective(windows), fmt_age(ts)
+        return effective(windows), ts
     except Exception as ex:  # битый/отсутствующий файл не должен ронять виджет
-        return [], f"ошибка: {type(ex).__name__}"
+        return [], T("error", e=type(ex).__name__)
+
+
+def age_text(status):
+    """Подпись возраста данных: время -> 'сейчас' / '5 мин назад', текст ошибки - как есть."""
+    return status if isinstance(status, str) else fmt_age(status)
 
 
 def load_plan(reader):
@@ -213,13 +262,14 @@ def load_plan(reader):
     if not until:
         return plan, None, None
     days = math.ceil((until - time.time()) / 86400)
-    date = datetime.fromtimestamp(until).strftime("%d.%m")
+    date = datetime.fromtimestamp(until).strftime(T("date"))
     if days <= 0:
-        return plan, f"подписка истекла {date}", RED
-    text = f"подписка до {date} · {days} дн" if exact else f"≈ продление {date} · {days} дн"
-    return plan, text, AMBER if days <= 3 else DIM
+        return plan, T("expired", date=date), RED
+    text = T("days", date=date, n=days)
+    return plan, text if exact else f"≈ {text}", AMBER if days <= 3 else DIM  # ≈ - дата оценочная (Claude)
 
 
+# --- картинки ----------------------------------------------------------------------------------
 def rounded_bar(pct, w, h, color, bg=BG):
     """Гладкая полоска со скруглёнными концами: рисуем в 4x и уменьшаем (антиалиасинг)."""
     k = 4
@@ -232,25 +282,47 @@ def rounded_bar(pct, w, h, color, bg=BG):
     return img.resize((w, h), Image.LANCZOS)
 
 
+def icon_font(px):
+    """Первый доступный шрифт значков Windows: (шрифт, запись из PIN_FONTS) или (None, None)."""
+    for entry in PIN_FONTS:
+        try:
+            return ImageFont.truetype(entry[0], px), entry
+        except OSError:
+            continue
+    return None, None
+
+
+def flatten(img, size, bg):
+    """RGBA-картинка в 4x -> RGB нужного размера на фоне панели."""
+    out = Image.new("RGB", img.size, bg)
+    out.paste(img, mask=img)
+    return out.resize((size, size), Image.LANCZOS)
+
+
 def pin_image(pinned, size, bg=BG):
     """Значок пина: откреплён - контур с наклоном 45°, закреплён - заливка, игла вертикально вниз."""
     k = 4  # рисуем крупно и уменьшаем - гладкие края после поворота
     img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
-    for path, outline, filled, needle in PIN_FONTS:
-        try:
-            font = ImageFont.truetype(path, int(size * k * 0.8))
-        except OSError:
-            continue
+    font, entry = icon_font(int(size * k * 0.8))
+    if font:
+        _, outline, filled, needle = entry
         d = ImageDraw.Draw(img)
         # залитый глиф - только «головка» без иглы, поэтому кладём его поверх контура
         for glyph in (outline, filled) if pinned else (outline,):
             d.text((size * k / 2, size * k / 2), glyph, font=font, anchor="mm", fill=FG if pinned else DIM)
         # 225° = игла влево-вниз (наклон), 270° = вниз (воткнут); rotate() крутит против часовой
         img = img.rotate((270 if pinned else 225) - needle, resample=Image.BICUBIC)
-        break
-    out = Image.new("RGB", img.size, bg)
-    out.paste(img, mask=img)
-    return out.resize((size, size), Image.LANCZOS)
+    return flatten(img, size, bg)
+
+
+def glyph_image(glyph, color, size, bg=BG):
+    """Значок из шрифта значков Windows (шестерёнка, стрелка обновления)."""
+    k = 4
+    img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
+    font, _ = icon_font(int(size * k * 0.75))
+    if font:
+        ImageDraw.Draw(img).text((size * k / 2, size * k / 2), glyph, font=font, anchor="mm", fill=color)
+    return flatten(img, size, bg)
 
 
 def tray_image(pcts):
@@ -273,44 +345,53 @@ def work_area():
     return r.right, r.bottom
 
 
+# --- окно --------------------------------------------------------------------------------------
 class Widget:
     PROVIDERS = (("Claude", read_claude, read_claude_plan), ("Codex", read_codex, read_codex_plan))
 
     def __init__(self):
+        global LANG
         self.root = tk.Tk()
         self.root.withdraw()  # на старте показываем только иконку в трее
         self.root.overrideredirect(True)  # без рамки и заголовка
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
         self.s = self.root.winfo_fpixels("1i") / 96  # коэффициент масштабирования экрана
-        self.card = tk.Frame(self.root, bg=BG, padx=self.px(18), pady=self.px(14))
-        self.card.pack()
+        self.card = None  # рамка с содержимым, пересобирается в refresh()
         self.images = []  # держим ссылки на PhotoImage, иначе tk их выбросит
         self.visible = False
         self.hidden_at = 0.0
         self.rounded = False
         self.auto_shown = False  # панель открыта уведомлением, а не пользователем
         self.alerted = {}  # (провайдер, окно) -> последний порог, о котором уже уведомили
+        self.view = "limits"  # что показывает панель: limits или settings
+        self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
         try:
-            self.pinned = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("pinned", False)
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            self.pinned = False
+            state = {}
+        self.pinned = state.get("pinned", False)
+        LANG = state.get("lang") if state.get("lang") in LANGS else "ru"
         self.root.bind("<Escape>", lambda e: self.hide())
         self.root.bind("<FocusOut>", self._on_focus_out)
 
         # трей живёт в своём потоке, команды в tk передаются через очередь
         self.cmds = queue.Queue()
-        self.icon = pystray.Icon("tollgate", tray_image([None, None]), "Tollgate", pystray.Menu(
-            pystray.MenuItem(f"Tollgate {__version__}", None, enabled=False),  # версия - видно, у кого какая сборка
-            pystray.MenuItem("Показать", lambda: self.cmds.put(self.toggle), default=True),
-            pystray.MenuItem("Обновить", lambda: self.cmds.put(self.refresh)),
-            pystray.MenuItem("Выход", lambda: self.cmds.put(self.quit)),
-        ))
+        self.icon = pystray.Icon("tollgate", tray_image([None, None]), "Tollgate", self._menu())
         threading.Thread(target=self.icon.run, daemon=True).start()
         self._poll()
         self.refresh()
         if self.pinned:  # закреплённая панель видна сразу после запуска
             self.show(focus=False)
+
+    def _menu(self):
+        """Меню иконки трея на текущем языке."""
+        return pystray.Menu(
+            pystray.MenuItem(f"Tollgate {__version__}", None, enabled=False),  # версия - видно, у кого какая сборка
+            pystray.MenuItem(T("show"), lambda: self.cmds.put(self.toggle), default=True),
+            pystray.MenuItem(T("refresh"), lambda: self.cmds.put(self.refresh)),
+            pystray.MenuItem(T("quit"), lambda: self.cmds.put(self.quit)),
+        )
 
     def px(self, v):
         return int(v * self.s)
@@ -336,11 +417,12 @@ class Widget:
         self.root.update_idletasks()
         right, bottom = work_area()
         w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
-        self.root.geometry(f"+{right - w - self.px(MARGIN)}+{bottom - h - self.px(MARGIN)}")
+        self.root.geometry(f"{w}x{h}+{right - w - self.px(MARGIN)}+{bottom - h - self.px(MARGIN)}")
 
     def show(self, focus=True):
         self.visible = True
         self.auto_shown = not focus
+        self.view = "limits"  # открытая заново панель всегда начинается с лимитов
         self.refresh()
         self.root.deiconify()
         if not self.rounded:  # скругление окна средствами Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = ROUND)
@@ -357,14 +439,30 @@ class Widget:
             self.visible = False
             self.hidden_at = time.time()
 
+    def _save_state(self):
+        try:
+            TOLLGATE_DIR.mkdir(exist_ok=True)
+            STATE_FILE.write_text(json.dumps({"pinned": self.pinned, "lang": LANG}), encoding="utf-8")
+        except OSError:
+            pass  # не сохранилось - настройки работают до перезапуска
+
     def toggle_pin(self):
         self.pinned = not self.pinned
         self.auto_shown = False
-        try:
-            TOLLGATE_DIR.mkdir(exist_ok=True)
-            STATE_FILE.write_text(json.dumps({"pinned": self.pinned}), encoding="utf-8")
-        except OSError:
-            pass  # не сохранилось - пин работает до перезапуска
+        self._save_state()
+        self.refresh()
+
+    def toggle_settings(self):
+        self.view = "limits" if self.view == "settings" else "settings"
+        self.auto_shown = False
+        self.refresh()
+
+    def set_lang(self, code):
+        global LANG
+        LANG = code
+        self._save_state()
+        self.icon.menu = self._menu()
+        self.icon.update_menu()
         self.refresh()
 
     def _auto_hide(self):
@@ -381,11 +479,11 @@ class Widget:
                 key = (name, label)
                 level = max((t for t in THRESHOLDS if pct >= t), default=0)
                 if level > self.alerted.get(key, 0):
-                    hot.append(f"{name} {label}: {pct}%" + (f", сброс через {left}" if left and left != "сброшен" else ""))
+                    hot.append(f"{name} {win_name(label)}: {pct}%" + (T("alert_reset", left=left) if left else ""))
                 self.alerted[key] = level  # после сброса окна уровень падает и уведомление сработает снова
         if hot:
             try:
-                self.icon.notify("\n".join(hot), "Tollgate: лимит заканчивается")
+                self.icon.notify("\n".join(hot), T("alert_title"))
             except Exception:
                 pass  # уведомления могут быть отключены в Windows - панель всё равно откроется
             if not self.visible:
@@ -396,18 +494,24 @@ class Widget:
         self.icon.stop()
         self.root.destroy()
 
-    def _titlebar(self):
-        """Шапка: название и версия слева, время обновления и пин справа."""
+    def _icon_button(self, parent, image, command, gap=8):
+        """Кликабельный значок в шапке, gap - отступ слева."""
+        img = ImageTk.PhotoImage(image)
+        self.images.append(img)
+        b = tk.Label(parent, image=img, bg=BG, bd=0, cursor="hand2")
+        b.pack(side="right", padx=(self.px(gap), 0))
+        b.bind("<Button-1>", lambda e: command())
+
+    def _titlebar(self, freshest):
+        """Шапка: название и версия слева; возраст самых свежих данных, шестерёнка и пин справа."""
         bar = tk.Frame(self.card, bg=BG)
         bar.grid(row=0, column=0, columnspan=4, sticky="ew")
-        tk.Label(bar, text="Tollgate", bg=BG, fg=FG, font=("Segoe UI Semibold", 10)).pack(side="left")
-        tk.Label(bar, text=f"v{__version__}", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="left", padx=(self.px(5), 0), pady=(self.px(2), 0))
-        img = ImageTk.PhotoImage(pin_image(self.pinned, self.px(16)))
-        self.images.append(img)
-        pin = tk.Label(bar, image=img, bg=BG, bd=0, cursor="hand2")
-        pin.pack(side="right", padx=(self.px(8), 0))
-        pin.bind("<Button-1>", lambda e: self.toggle_pin())
-        tk.Label(bar, text=f"обновлено {datetime.now():%H:%M}", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="right")
+        tk.Label(bar, text="Tollgate", bg=BG, fg=FG, font=F(10, bold=True, lang="en")).pack(side="left")
+        tk.Label(bar, text=f"v{__version__}", bg=BG, fg=DIM, font=F(8, lang="en")).pack(side="left", padx=(self.px(5), 0), pady=(self.px(2), 0))
+        self._icon_button(bar, pin_image(self.pinned, self.px(16)), self.toggle_pin)
+        self._icon_button(bar, glyph_image(GEAR, FG if self.view == "settings" else DIM, self.px(16)), self.toggle_settings)
+        tk.Label(bar, text=fmt_age(freshest), bg=BG, fg=DIM, font=F(8)).pack(side="right")
+        self._icon_button(bar, glyph_image(REFRESH, DIM, self.px(13)), self.refresh, gap=0)  # клик - обновить вручную
         tk.Frame(self.card, bg=TRACK, height=1).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(self.px(8), self.px(10)))
         return 2  # следующая свободная строка грида
 
@@ -415,54 +519,81 @@ class Widget:
         """Заголовок провайдера и его полоски, возвращает следующую строку грида."""
         head = tk.Frame(self.card, bg=BG)
         head.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, self.px(6)))
-        tk.Label(head, text="●", bg=BG, fg=DOTS[title], font=("Segoe UI", 9)).pack(side="left")
-        tk.Label(head, text=title, bg=BG, fg=FG, font=("Segoe UI Semibold", 11)).pack(side="left", padx=(self.px(4), 0))
+        tk.Label(head, text="●", bg=BG, fg=DOTS[title], font=F(9, lang="en")).pack(side="left")
+        tk.Label(head, text=title, bg=BG, fg=FG, font=F(11, bold=True, lang="en")).pack(side="left", padx=(self.px(4), 0))
         name, until_text, until_color = plan
         if name:
             bg, fg = BADGES[title]
-            tk.Label(head, text=name, bg=bg, fg=fg, font=("Segoe UI Semibold", 8), padx=self.px(6)).pack(side="left", padx=(self.px(8), 0))
-        tk.Label(head, text=age, bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="right")
+            tk.Label(head, text=name, bg=bg, fg=fg, font=F(8, bold=True, lang="en"), padx=self.px(6)).pack(side="left", padx=(self.px(8), 0))
+        if until_text:
+            tk.Label(head, text=until_text, bg=BG, fg=until_color, font=F(8)).pack(side="left", padx=(self.px(6), 0))
+        tk.Label(head, text=age_text(age), bg=BG, fg=DIM, font=F(8)).pack(side="right", padx=(self.px(12), 0))  # отступ - не слипаться с датой
         row += 1
         if not windows:
-            tk.Label(self.card, text="нет данных о лимитах", bg=BG, fg=DIM, font=("Segoe UI", 9)).grid(row=row, column=0, columnspan=4, sticky="w")
+            tk.Label(self.card, text=T("no_limits"), bg=BG, fg=DIM, font=F(9)).grid(row=row, column=0, columnspan=4, sticky="w")
             row += 1
         for label, pct, left in windows:
+            left = T("reset") if left is None else left
             color = bar_color(pct)
             hot = pct >= THRESHOLDS[0]
             bg = ALERT_BG[color] if hot else BG
             img = ImageTk.PhotoImage(rounded_bar(pct, self.px(150), self.px(8), color, bg=bg))
             self.images.append(img)
             pad, ip = (0, self.px(4)), self.px(4)  # внешний отступ между строками, внутренний - для фона подсветки
-            tk.Label(self.card, text=label, bg=bg, fg=color if hot else DIM, font=("Segoe UI Semibold" if hot else "Segoe UI", 9),
+            tk.Label(self.card, text=win_name(label), bg=bg, fg=color if hot else DIM, font=F(9, bold=hot),
                      anchor="w", padx=ip, pady=ip).grid(row=row, column=0, sticky="nsew", pady=pad)
             tk.Label(self.card, image=img, bg=bg, bd=0, padx=self.px(10)).grid(row=row, column=1, sticky="nsew", pady=pad)
-            tk.Label(self.card, text=f"{pct}%", bg=bg, fg=color if hot else FG, font=("Segoe UI Semibold", 9), width=4,
+            tk.Label(self.card, text=f"{pct}%", bg=bg, fg=color if hot else FG, font=F(9, bold=True, lang="en"), width=4,
                      anchor="e").grid(row=row, column=2, sticky="nsew", pady=pad)
-            tk.Label(self.card, text=left, bg=bg, fg=color if hot else DIM, font=("Segoe UI", 8), width=7, anchor="e",
+            tk.Label(self.card, text=left, bg=bg, fg=color if hot else DIM, font=F(8), width=7, anchor="e",
                      padx=ip).grid(row=row, column=3, sticky="nsew", pady=pad)
             row += 1
-        if until_text:
-            tk.Label(self.card, text=until_text, bg=BG, fg=until_color, font=("Segoe UI", 8)).grid(row=row, column=0, columnspan=4, sticky="w")
-            row += 1
         return row
+
+    def _settings(self, row):
+        """Настройки в том же окне: пока - язык интерфейса."""
+        tk.Label(self.card, text=T("language"), bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w")
+        langs = tk.Frame(self.card, bg=BG)
+        langs.grid(row=row + 1, column=0, columnspan=4, sticky="w", pady=(self.px(6), 0))
+        for code, title in LANGS.items():
+            on = code == LANG
+            b = tk.Label(langs, text=title, bg=FG if on else TRACK, fg=BG if on else FG, font=F(9, lang=code),
+                         padx=self.px(12), pady=self.px(4), cursor="hand2")
+            b.pack(side="left", padx=(0, self.px(6)))
+            b.bind("<Button-1>", lambda e, c=code: self.set_lang(c))
 
     def refresh(self):
         if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
             self.root.after_cancel(self._job)
         data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
-        # панель
-        for w in self.card.winfo_children():
-            w.destroy()
-        self.images.clear()
-        row = self._titlebar()
-        for i, (name, windows, age, plan) in enumerate(data):
-            if i:
-                tk.Frame(self.card, bg=TRACK, height=1).grid(row=row, column=0, columnspan=4, sticky="ew", pady=(self.px(4), self.px(10)))
-                row += 1
-            row = self._section(row, name, windows, age, plan)
+        # собираем новую рамку, пока старая на экране - без мигания и «схлопывания» окна
+        old_card = self.card
+        self.card = tk.Frame(self.root, bg=BG, padx=self.px(18), pady=self.px(14))
+        self.images = []  # старые картинки живут в старом списке, пока старая рамка не удалена
+        freshest = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
+        row = self._titlebar(freshest)
+        if self.view == "settings":
+            self._settings(row)
+            if self.limits_size:  # тот же размер, что у панели лимитов - окно не прыгает
+                self.card.configure(width=self.limits_size[0], height=self.limits_size[1])
+                self.card.grid_propagate(False)
+                self.card.grid_columnconfigure(3, weight=1)  # шапка и разделитель тянутся на всю ширину
+        else:
+            for i, (name, windows, age, plan) in enumerate(data):
+                if i:
+                    tk.Frame(self.card, bg=TRACK, height=1).grid(row=row, column=0, columnspan=4, sticky="ew", pady=(self.px(4), self.px(10)))
+                    row += 1
+                row = self._section(row, name, windows, age, plan)
+        if old_card:
+            old_card.pack_forget()
+            old_card.destroy()
+        self.card.pack()
+        if self.view == "limits":
+            self.root.update_idletasks()
+            self.limits_size = (self.card.winfo_reqwidth(), self.card.winfo_reqheight())
         # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами
         self.icon.icon = tray_image([max((p for _, p, _ in w), default=None) for _, w, _, _ in data])
-        tip = "\n".join(f"{n}: " + (", ".join(f"{l} {p}%" for l, p, _ in w) or "нет данных") for n, w, _, _ in data)
+        tip = "\n".join(f"{n}: " + (", ".join(f"{win_name(l)} {p}%" for l, p, _ in w) or T("no_data")) for n, w, _, _ in data)
         self.icon.title = tip[:127]  # лимит длины подсказки в Windows
         if self.visible:  # высота могла измениться - заново прижать к углу
             self._place()
@@ -481,7 +612,8 @@ if __name__ == "__main__":
     if "--print" in sys.argv:  # режим проверки: вывести данные в консоль без окна
         sys.stdout.reconfigure(encoding="utf-8")
         for name, reader, plan in Widget.PROVIDERS:
-            print(name, *load(reader), load_plan(plan))
+            windows, status = load(reader)
+            print(name, windows, age_text(status), load_plan(plan))
     elif single_instance():
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # чёткий текст на экранах с масштабом >100%
         Widget().root.mainloop()
