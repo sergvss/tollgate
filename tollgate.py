@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 import base64
 import ctypes
@@ -38,10 +38,12 @@ THEMES = {
     "light": {"BG": "#ffffff", "FG": "#1d1d1f", "DIM": "#86868b", "TRACK": "#ececf0",
               "ALERT_BG": {AMBER: "#fff4e0", RED: "#ffeceb"},
               "BADGES": {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")},
+              "PILL": "#ffffff",  # выбранный вариант в переключателе
               "BORDER": 0xFFFFFFFF},  # рамка окна - цвет Windows по умолчанию
     "dark": {"BG": "#1f1f23", "FG": "#f2f2f5", "DIM": "#8e8e96", "TRACK": "#34343a",
              "ALERT_BG": {AMBER: "#3a2f17", RED: "#3e2222"},
              "BADGES": {"Claude": ("#3d2a23", "#f0a587"), "Codex": ("#17332a", "#5fd3ae")},
+             "PILL": "#4a4a52",
              "BORDER": 0x00403A3A},  # COLORREF 0x00BBGGRR - тёмно-серая рамка вместо светлой
 }
 SCALES = (1.0, 1.25)  # масштаб интерфейса: как сейчас и крупнее
@@ -50,10 +52,11 @@ THEME, SCALE = "light", 1.0  # текущие тема и масштаб, зад
 
 def apply_theme(name):
     """Переключить палитру: цвета - глобальные, их читают все функции отрисовки."""
-    global THEME, BG, FG, DIM, TRACK, ALERT_BG, BADGES
+    global THEME, BG, FG, DIM, TRACK, ALERT_BG, BADGES, PILL
     THEME = name
     t = THEMES[name]
     BG, FG, DIM, TRACK, ALERT_BG, BADGES = t["BG"], t["FG"], t["DIM"], t["TRACK"], t["ALERT_BG"], t["BADGES"]
+    PILL = t["PILL"]
 
 
 apply_theme("light")
@@ -361,6 +364,22 @@ def tray_image(pcts):
     return img
 
 
+def animate(widget, duration_ms, frame, then=None):
+    """Вызывать frame(k) с k от 0 до 1 (ease-out) в течение duration_ms по реальному времени.
+    Длительность не растягивается, даже если отдельные кадры запаздывают."""
+    t0 = time.perf_counter()
+
+    def step():
+        k = min(1.0, (time.perf_counter() - t0) * 1000 / duration_ms)
+        frame(1 - (1 - k) ** 3)
+        if k < 1:
+            widget.after(10, step)
+        elif then:
+            then()
+
+    step()
+
+
 def work_area():
     """Рабочая область главного монитора (без панели задач), физические px."""
     r = ctypes.wintypes.RECT()
@@ -404,6 +423,7 @@ class Widget:
         self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
         self.ip = 0  # общий внутренний отступ слева и справа (задаётся при сборке - зависит от масштаба)
         self.hwnd = None  # окно Windows - для скругления и цвета рамки
+        self.fading = False  # идёт плавная смена содержимого - новые клики игнорируем
         self.bar_w = self.px(150)  # ширина полоски, подгоняется под ширину заголовков
         self.heads = []  # строки-заголовки (шапка, провайдеры) - по ним считается ширина панели
         try:
@@ -501,7 +521,30 @@ class Widget:
         self._save_state()
         self._set_image(self.refs["pin"], pin_image(self.pinned, self.px(16)))  # только значок, без пересборки
 
+    def _transition(self, change):
+        """Плавная смена содержимого: окно гаснет, пересобирается невидимым и проявляется - без мерцания."""
+        if self.fading:
+            return
+        if not self.visible:
+            change()
+            return
+        self.fading = True
+        alpha = lambda a: self.root.attributes("-alpha", a)
+
+        def swap():
+            change()
+            # пауза: окно дорисуется, пока прозрачное; затем проявляется
+            self.root.after(30, animate, self.root, 120, alpha, done)
+
+        def done():
+            self.fading = False
+
+        animate(self.root, 70, lambda k: alpha(1 - k), swap)
+
     def toggle_settings(self):
+        self._transition(self._switch_view)
+
+    def _switch_view(self):
         self.view = "limits" if self.view == "settings" else "settings"
         self.auto_shown = False
         self.refresh()
@@ -635,18 +678,52 @@ class Widget:
             row += 1
         return row
 
+    def _segmented(self, options, current, command):
+        """Переключатель-сегмент: дорожка-капсула, по которой ездит «пилюля» выбранного варианта.
+        options - [(значение, текст, язык шрифта)]; command(значение) - после того, как пилюля доехала."""
+        n = len(options)
+        seg = max(tkfont.Font(root=self.root, font=F(9, lang=lang)).measure(text) for _, text, lang in options) + 2 * self.px(14)
+        h, pad = self.px(24), self.px(2)
+
+        def capsule(w, hh, color, bg):  # гладкая капсула: рисуем в 4x и уменьшаем
+            k = 4
+            img = Image.new("RGB", (w * k, hh * k), bg)
+            ImageDraw.Draw(img).rounded_rectangle([0, 0, w * k - 1, hh * k - 1], radius=hh * k // 2, fill=color)
+            return ImageTk.PhotoImage(img.resize((w, hh), Image.LANCZOS))
+
+        c = tk.Canvas(self.card, width=seg * n, height=h, bg=BG, highlightthickness=0, bd=0, cursor="hand2")
+        c.imgs = (capsule(seg * n, h, TRACK, BG), capsule(seg - 2 * pad, h - 2 * pad, PILL, TRACK))  # ссылки, иначе tk выбросит
+        c.create_image(0, 0, anchor="nw", image=c.imgs[0])
+        cur = [v for v, _, _ in options].index(current)
+        knob = c.create_image(cur * seg + pad, pad, anchor="nw", image=c.imgs[1])
+        texts = [c.create_text(i * seg + seg / 2, h / 2, text=text, font=F(9, lang=lang), fill=FG if i == cur else DIM)
+                 for i, (_, text, lang) in enumerate(options)]
+        state = {"cur": cur, "busy": False}
+
+        def click(e):
+            i = min(n - 1, max(0, int(e.x // seg)))
+            if i == state["cur"] or state["busy"] or self.fading:
+                return
+            state["busy"] = True
+            for j, t in enumerate(texts):
+                c.itemconfigure(t, fill=FG if j == i else DIM)
+            start, end = state["cur"] * seg + pad, i * seg + pad
+
+            def arrived():
+                state["cur"] = i
+                command(options[i][0])
+
+            animate(c, 160, lambda k: c.coords(knob, start + (end - start) * k, pad), arrived)
+
+        c.bind("<Button-1>", click)
+        return c
+
     def _choice(self, row, title, options, current, command, last=False):
-        """Группа настроек: подпись и ряд переключателей. options - [(значение, текст, язык шрифта)]."""
+        """Группа настроек: подпись и переключатель. options - [(значение, текст, язык шрифта)]."""
         tk.Label(self.card, text=title, bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
-        line = tk.Frame(self.card, bg=BG)
+        seg = self._segmented(options, current, lambda v: self._transition(lambda: command(v)))
         # компактные отступы - три группы помещаются в высоту панели лимитов, окно не растёт
-        line.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(3), 0 if last else self.px(8)))
-        for value, text, lang in options:
-            on = value == current
-            b = tk.Label(line, text=text, bg=FG if on else TRACK, fg=BG if on else FG, font=F(9, lang=lang),
-                         padx=self.px(12), pady=self.px(4), cursor="hand2")
-            b.pack(side="left", padx=(0, self.px(6)))
-            b.bind("<Button-1>", lambda e, v=value: command(v))
+        seg.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(3), 0 if last else self.px(8)))
         return row + 2
 
     def _settings(self, row):
