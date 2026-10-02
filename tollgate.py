@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 import base64
 import ctypes
@@ -380,36 +380,6 @@ def animate(widget, duration_ms, frame, then=None):
     step()
 
 
-def grab_region(x, y, w, h):
-    """Снимок прямоугольника экрана через BitBlt: в разы быстрее ImageGrab, который при нескольких
-    мониторах сначала снимает весь рабочий стол (у пользователя это ~300 мс)."""
-    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
-    vp, i, u = ctypes.c_void_p, ctypes.c_int, ctypes.c_uint
-    # дескрипторы 64-битные: без явных типов ctypes обрежет их до int
-    user32.GetDC.restype = gdi32.CreateCompatibleDC.restype = gdi32.CreateCompatibleBitmap.restype = vp
-    gdi32.SelectObject.restype = vp
-    user32.GetDC.argtypes = (vp,)
-    user32.ReleaseDC.argtypes = (vp, vp)
-    gdi32.CreateCompatibleDC.argtypes = gdi32.DeleteDC.argtypes = gdi32.DeleteObject.argtypes = (vp,)
-    gdi32.CreateCompatibleBitmap.argtypes = (vp, i, i)
-    gdi32.SelectObject.argtypes = (vp, vp)
-    gdi32.BitBlt.argtypes = (vp, i, i, i, i, vp, i, i, u)
-    gdi32.GetDIBits.argtypes = (vp, vp, u, u, vp, vp, u)
-    screen = user32.GetDC(None)
-    mem = gdi32.CreateCompatibleDC(screen)
-    bmp = gdi32.CreateCompatibleBitmap(screen, w, h)
-    old = gdi32.SelectObject(mem, bmp)
-    gdi32.BitBlt(mem, 0, 0, w, h, screen, x, y, 0x00CC0020 | 0x40000000)  # SRCCOPY | CAPTUREBLT
-    header = (ctypes.c_uint32 * 10)(40, w, (-h) & 0xFFFFFFFF, 1 | (32 << 16), 0, 0, 0, 0, 0, 0)  # BITMAPINFOHEADER, сверху вниз
-    buf = ctypes.create_string_buffer(w * h * 4)
-    gdi32.GetDIBits(mem, bmp, 0, h, buf, header, 0)
-    gdi32.SelectObject(mem, old)
-    gdi32.DeleteObject(bmp)
-    gdi32.DeleteDC(mem)
-    user32.ReleaseDC(None, screen)
-    return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
-
-
 def work_area():
     """Рабочая область главного монитора (без панели задач), физические px."""
     r = ctypes.wintypes.RECT()
@@ -453,7 +423,6 @@ class Widget:
         self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
         self.ip = 0  # общий внутренний отступ слева и справа (задаётся при сборке - зависит от масштаба)
         self.hwnd = None  # окно Windows - для скругления и цвета рамки
-        self.sliding = False  # идёт плавная смена раздела - новые переключения игнорируем
         self.bar_w = self.px(150)  # ширина полоски, подгоняется под ширину заголовков
         self.heads = []  # строки-заголовки (шапка, провайдеры) - по ним считается ширина панели
         try:
@@ -552,7 +521,7 @@ class Widget:
         self._set_image(self.refs["pin"], pin_image(self.pinned, self.px(16)))  # только значок, без пересборки
 
     def toggle_settings(self):
-        self._crossfade(self._switch_view)
+        self._switch_view()
 
     def _switch_view(self):
         self.view = "limits" if self.view == "settings" else "settings"
@@ -568,48 +537,6 @@ class Widget:
         user32.SendMessageW(self.hwnd, 0x000B, 0 if on else 1, 0)
         if not on:  # RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW - перерисовать всё, без стирания фона
             user32.RedrawWindow(self.hwnd, None, None, 0x0001 | 0x0080 | 0x0100)
-
-    def _crossfade(self, change):
-        """Плавная смена раздела без исчезновения окна: поверх панели кладём «призрака» - отдельное окно
-        с картинкой текущего содержимого, под ним пересобираем раздел и растворяем призрака (~0.18 с)."""
-        if self.sliding:
-            return
-        if not (self.visible and self.hwnd):
-            change()
-            return
-        self.sliding = True
-        x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
-        w, h = self.root.winfo_width(), self.root.winfo_height()
-        shot = grab_region(x, y, w, h)  # панель поверх всех окон - на снимке она
-        ghost = tk.Toplevel(self.root)
-        ghost.withdraw()
-        ghost.overrideredirect(True)
-        ghost.attributes("-topmost", True)
-        ghost.attributes("-alpha", 0.0)  # проявим, когда картинка уже нарисована - без вспышки фона
-        ghost.geometry(f"{w}x{h}+{x}+{y}")
-        lbl = tk.Label(ghost, bd=0, highlightthickness=0)
-        self._set_image(lbl, shot)
-        lbl.pack()
-        ghost.deiconify()
-        ghost.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(ghost.winfo_id())
-        for attr, value in ((33, 2), (34, THEMES[THEME]["BORDER"])):  # те же скругление и рамка, что у панели
-            v = ctypes.c_uint(value)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
-
-        def covered():
-            ghost.attributes("-alpha", 1.0)  # призрак совпадает с панелью пиксель в пиксель - глазу не видно
-            self.root.after(15, swap)
-
-        def swap():
-            change()  # пересборка под призраком - её мерцание не видно
-            self.root.after(40, animate, ghost, 180, lambda k: ghost.attributes("-alpha", 1 - k), done)
-
-        def done():
-            ghost.destroy()
-            self.sliding = False
-
-        self.root.after(30, covered)
 
     def set_lang(self, code):
         global LANG
@@ -764,7 +691,7 @@ class Widget:
 
         def click(e):
             i = min(n - 1, max(0, int(e.x // seg)))
-            if i == state["cur"] or state["busy"] or self.sliding:
+            if i == state["cur"] or state["busy"]:
                 return
             state["busy"] = True
             for j, t in enumerate(texts):
@@ -783,7 +710,7 @@ class Widget:
     def _choice(self, row, title, options, current, command, last=False):
         """Группа настроек: подпись и переключатель. options - [(значение, текст, язык шрифта)]."""
         tk.Label(self.card, text=title, bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
-        seg = self._segmented(options, current, lambda v: self._crossfade(lambda: command(v)))
+        seg = self._segmented(options, current, command)
         # компактные отступы - три группы помещаются в высоту панели лимитов, окно не растёт
         seg.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(3), 0 if last else self.px(8)))
         return row + 2
@@ -920,9 +847,6 @@ class Widget:
     def refresh(self):
         if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
             self.root.after_cancel(self._job)
-        if self.sliding:
-            self._job = self.root.after(300, self.refresh)
-            return
         data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
         self.statuses = {name: st for name, _, st, _ in data}
         self.statuses["freshest"] = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
