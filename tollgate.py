@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 import base64
 import ctypes
@@ -60,7 +60,6 @@ def apply_theme(name):
 
 
 apply_theme("light")
-DOTS = {"Claude": "#d97757", "Codex": "#10a37f"}  # цветные точки у имени провайдера
 THRESHOLDS = (80, 95)  # при каких % заполнения окна показывать уведомление
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
@@ -359,8 +358,8 @@ def tray_image(pcts):
         x0 = 8 + i * 28
         d.rounded_rectangle([x0, 4, x0 + 20, 60], radius=8, fill=(150, 150, 160, 110))
         if p is not None:
-            top = 60 - max(16, 56 * p / 100)  # минимум - кружок, чтобы цвет был виден и при 0%
-            d.rounded_rectangle([x0, top, x0 + 20, 60], radius=8, fill=bar_color(p))
+            fill = max(6, 56 * p / 100)  # минимум - точка, чтобы цвет был виден и при 0%
+            d.rounded_rectangle([x0, 60 - fill, x0 + 20, 60], radius=min(8, fill / 2), fill=bar_color(p))
     return img
 
 
@@ -628,19 +627,30 @@ class Widget:
         tk.Frame(self.card, bg=TRACK, height=1).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(self.px(8), self.px(10)))
         return 2  # следующая свободная строка грида
 
+    def _badge(self, parent, text, bg, fg):
+        """Плашка тарифа - капсула: гладкая подложка (PIL, 4x и уменьшение) и текст поверх."""
+        font = F(8, bold=True, lang="en")
+        h = self.px(18)
+        w = tkfont.Font(root=self.root, font=font).measure(text) + 2 * self.px(8)
+        k = 4
+        img = Image.new("RGB", (w * k, h * k), BG)
+        ImageDraw.Draw(img).rounded_rectangle([0, 0, w * k - 1, h * k - 1], radius=h * k // 2, fill=bg)
+        c = tk.Canvas(parent, width=w, height=h, bg=BG, highlightthickness=0, bd=0)
+        c.img = ImageTk.PhotoImage(img.resize((w, h), Image.LANCZOS))  # ссылка, иначе tk выбросит
+        c.create_image(0, 0, anchor="nw", image=c.img)
+        c.create_text(w / 2, h / 2, text=text, font=font, fill=fg)
+        return c
+
     def _section(self, row, title, windows, age, plan):
         """Заголовок провайдера и его полоски; ссылки на изменяемые элементы - в self.refs[title]."""
         ref = self.refs[title] = {"rows": {}}
         head = tk.Frame(self.card, bg=BG)
         head.grid(row=row, column=0, columnspan=4, sticky="ew", padx=self.ip, pady=(0, self.px(6)))
         self.heads.append(head)
-        tk.Label(head, text="●", bg=BG, fg=DOTS[title], font=F(9, lang="en")).pack(side="left")
-        tk.Label(head, text=title, bg=BG, fg=FG, font=F(11, bold=True, lang="en")).pack(side="left", padx=(self.px(4), 0))
+        tk.Label(head, text=title, bg=BG, fg=FG, font=F(11, bold=True, lang="en"), padx=0).pack(side="left")
         name, until_text, _ = plan
         if name:
-            bg, fg = BADGES[title]
-            ref["badge"] = tk.Label(head, bg=bg, fg=fg, font=F(8, bold=True, lang="en"), padx=self.px(6))
-            ref["badge"].pack(side="left", padx=(self.px(8), 0))
+            self._badge(head, name, *BADGES[title]).pack(side="left", padx=(self.px(8), 0))
         if until_text:
             ref["until"] = tk.Label(head, bg=BG, font=F(8))
             ref["until"].pack(side="left", padx=(self.px(6), 0))
@@ -812,8 +822,6 @@ class Widget:
         for name, windows, _, plan in data:
             ref = self.refs[name]
             plan_name, until_text, until_color = plan
-            if "badge" in ref:
-                self._set_text(ref["badge"], plan_name)
             if "until" in ref:
                 self._set_text(ref["until"], until_text, fg=until_color)
             for label, pct, left in windows:
@@ -841,7 +849,7 @@ class Widget:
         """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
         if self.view == "settings":
             return "settings", LANG, THEME, SCALE
-        return "limits", LANG, THEME, SCALE, tuple((n, tuple(l for l, _, _ in w), bool(p[0]), bool(p[1]), isinstance(a, str))
+        return "limits", LANG, THEME, SCALE, tuple((n, tuple(l for l, _, _ in w), p[0], bool(p[1]), isinstance(a, str))
                                      for n, w, a, p in data)
 
     def refresh(self):
