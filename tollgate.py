@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 import base64
 import ctypes
@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import datetime
 from pathlib import Path
 
@@ -268,7 +269,7 @@ def load_plan(reader):
     if days <= 0:
         return plan, T("expired", date=date), RED
     text = T("days", date=date, n=days)
-    return plan, text if exact else f"≈ {text}", AMBER if days <= 3 else DIM  # ≈ - дата оценочная (Claude)
+    return plan, text, AMBER if days <= 3 else DIM
 
 
 # --- картинки ----------------------------------------------------------------------------------
@@ -381,6 +382,9 @@ class Widget:
         self.alerted = {}  # (провайдер, окно) -> последний порог, о котором уже уведомили
         self.view = "limits"  # что показывает панель: limits или settings
         self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
+        self.ip = self.px(4)  # общий внутренний отступ слева и справа: по нему выровнены все строки
+        self.bar_w = self.px(150)  # ширина полоски, подгоняется под ширину заголовков
+        self.heads = []  # строки-заголовки (шапка, провайдеры) - по ним считается ширина панели
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -525,7 +529,7 @@ class Widget:
         """Значок справа в строке, gap - отступ слева; с command - кликабельный."""
         b = tk.Label(parent, bg=BG, bd=0, cursor="hand2" if command else "")
         self._set_image(b, image)
-        b.pack(side="right", padx=(self.px(gap), self.px(2)))
+        b.pack(side="right", padx=(self.px(gap), 0))
         if command:
             b.bind("<Button-1>", lambda e: command())
         return b
@@ -533,7 +537,8 @@ class Widget:
     def _titlebar(self):
         """Шапка: название и версия слева; возраст самых свежих данных, шестерёнка и пин справа."""
         bar = tk.Frame(self.card, bg=BG)
-        bar.grid(row=0, column=0, columnspan=4, sticky="ew")
+        bar.grid(row=0, column=0, columnspan=4, sticky="ew", padx=self.ip)
+        self.heads.append(bar)
         tk.Label(bar, text="Tollgate", bg=BG, fg=FG, font=F(10, bold=True, lang="en")).pack(side="left")
         tk.Label(bar, text=f"v{__version__}", bg=BG, fg=DIM, font=F(8, lang="en")).pack(side="left", padx=(self.px(5), 0), pady=(self.px(2), 0))
         self.refs["pin"] = self._icon_button(bar, pin_image(self.pinned, self.px(16)), self.toggle_pin)
@@ -548,7 +553,8 @@ class Widget:
         """Заголовок провайдера и его полоски; ссылки на изменяемые элементы - в self.refs[title]."""
         ref = self.refs[title] = {"rows": {}}
         head = tk.Frame(self.card, bg=BG)
-        head.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, self.px(6)))
+        head.grid(row=row, column=0, columnspan=4, sticky="ew", padx=self.ip, pady=(0, self.px(6)))
+        self.heads.append(head)
         tk.Label(head, text="●", bg=BG, fg=DOTS[title], font=F(9, lang="en")).pack(side="left")
         tk.Label(head, text=title, bg=BG, fg=FG, font=F(11, bold=True, lang="en")).pack(side="left", padx=(self.px(4), 0))
         name, until_text, _ = plan
@@ -565,15 +571,15 @@ class Widget:
             self._icon_button(head, glyph_image(CLOCK, DIM, self.px(12)), gap=12)  # отступ - не слипаться с датой
         row += 1
         if not windows:
-            tk.Label(self.card, text=T("no_limits"), bg=BG, fg=DIM, font=F(9)).grid(row=row, column=0, columnspan=4, sticky="w")
+            tk.Label(self.card, text=T("no_limits"), bg=BG, fg=DIM, font=F(9)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
             row += 1
         for label, pct, _ in windows:
-            pad, ip = (0, self.px(4)), self.px(4)  # внешний отступ между строками, внутренний - для фона подсветки
+            pad, ip = (0, self.px(4)), self.ip  # внешний отступ между строками, внутренний - для фона подсветки
             r = {"value": pct, "left_text": None, "anim": None,
                  "name": tk.Label(self.card, text=win_name(label), anchor="w", padx=ip, pady=ip),
                  "bar": tk.Label(self.card, bd=0, padx=self.px(10)),
-                 "pct": tk.Label(self.card, font=F(9, bold=True, lang="en"), width=4, anchor="e"),
-                 "left": tk.Label(self.card, font=F(8), anchor="w", padx=self.px(8))}
+                 "pct": tk.Label(self.card, font=F(9, bold=True, lang="en"), anchor="e", padx=ip),
+                 "left": tk.Label(self.card, font=F(8), anchor="e", padx=ip)}  # вправо - край совпадает с заголовками
             for col, key in enumerate(("name", "bar", "pct", "left")):
                 r[key].grid(row=row, column=col, sticky="nsew", pady=pad)
             self._paint_row(r, pct, pct)
@@ -584,9 +590,9 @@ class Widget:
 
     def _settings(self, row):
         """Настройки в том же окне: пока - язык интерфейса."""
-        tk.Label(self.card, text=T("language"), bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w")
+        tk.Label(self.card, text=T("language"), bg=BG, fg=DIM, font=F(8)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
         langs = tk.Frame(self.card, bg=BG)
-        langs.grid(row=row + 1, column=0, columnspan=4, sticky="w", pady=(self.px(6), 0))
+        langs.grid(row=row + 1, column=0, columnspan=4, sticky="w", padx=self.ip, pady=(self.px(6), 0))
         for code, title in LANGS.items():
             on = code == LANG
             b = tk.Label(langs, text=title, bg=FG if on else TRACK, fg=BG if on else FG, font=F(9, lang=code),
@@ -599,33 +605,60 @@ class Widget:
         for r in self.rows:  # анимации старых строк больше некуда рисовать
             if r["anim"]:
                 self.root.after_cancel(r["anim"])
-        self.refs, self.rows = {}, []
+        self.refs, self.rows, self.heads = {}, [], []
+        self.bar_w = self.px(150)
         # собираем новую рамку, пока старая на экране, и подменяем одним шагом
         old_card = self.card
         self.card = tk.Frame(self.root, bg=BG, padx=self.px(18), pady=self.px(14))
-        self.card.grid_columnconfigure(3, weight=1)  # лишняя ширина - в последнюю колонку, а не между процентом и временем
         row = self._titlebar()
         if self.view == "settings":
             self._settings(row)
+            self.card.grid_columnconfigure(3, weight=1)  # шапка тянется на всю ширину фиксированного окна
             if self.limits_size:  # тот же размер, что у панели лимитов - окно не прыгает
                 self.card.configure(width=self.limits_size[0], height=self.limits_size[1])
                 self.card.grid_propagate(False)
         else:
+            self._grid_columns()
             for i, (name, windows, age, plan) in enumerate(data):
                 if i:
                     tk.Frame(self.card, bg=TRACK, height=1).grid(row=row, column=0, columnspan=4, sticky="ew", pady=(self.px(4), self.px(10)))
                     row += 1
                 row = self._section(row, name, windows, age, plan)
+            self._fit_bars()
         if old_card:
             old_card.pack_forget()
             old_card.destroy()
         self.card.pack()
 
+    def _grid_columns(self):
+        """Ширина колонок по самому длинному возможному тексту - при обновлениях сетка не гуляет."""
+        def width(font, *texts):
+            f = tkfont.Font(root=self.root, font=font)
+            return max(f.measure(t) for t in texts) + 2 * self.ip
+        self.colmin = [
+            width(F(9, bold=True), *(win_name(k) for k in ("5h", "1d", "1w"))),  # подпись окна (жирная при подсветке)
+            0,  # полоска - своей картинкой
+            width(F(9, bold=True, lang="en"), "100%"),
+            width(F(8), T("left_dh", d=6, h=23), T("left_hm", h=23, m=59), T("reset")),  # время до сброса
+        ]
+        for col, size in enumerate(self.colmin):
+            self.card.grid_columnconfigure(col, minsize=size)
+
+    def _fit_bars(self):
+        """Если заголовки шире строк с полосками - удлинить полоски, чтобы правые края совпали."""
+        self.root.update_idletasks()
+        need = max(h.winfo_reqwidth() for h in self.heads) + 2 * self.ip
+        have = sum(self.colmin) + self.bar_w + 2 * self.px(10)  # 10 - отступы вокруг полоски
+        if need > have:
+            self.bar_w += need - have
+            for r in self.rows:
+                self._paint_row(r, r["value"], r["value"])
+
     # --- обновление на месте (каждые 30 с) ----------------------------------------------------
     def _paint_row(self, r, shown, final):
         """Строка полоски: длина и число - по shown (кадр анимации), цвет и подсветка - по итоговому final."""
         color, hot, bg = row_style(final)
-        self._set_image(r["bar"], rounded_bar(shown, self.px(150), self.px(8), color, bg=bg))
+        self._set_image(r["bar"], rounded_bar(shown, self.bar_w, self.px(8), color, bg=bg))
         r["bar"].configure(bg=bg)
         r["name"].configure(bg=bg, fg=color if hot else DIM, font=F(9, bold=hot))
         r["pct"].configure(text=f"{round(shown)}%", bg=bg, fg=color if hot else FG)
