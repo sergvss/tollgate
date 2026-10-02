@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import base64
 import ctypes
@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pystray
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 HOME = Path.home()
 CLAUDE_JSON = HOME / ".claude.json"
@@ -38,7 +38,9 @@ GREEN, AMBER, RED = "#34c759", "#ff9f0a", "#ff3b30"
 DOTS = {"Claude": "#d97757", "Codex": "#10a37f"}  # цветные точки у имени провайдера
 THRESHOLDS = (80, 95)  # при каких % заполнения окна показывать уведомление
 ALERT_BG = {AMBER: "#fff4e0", RED: "#ffeceb"}  # фон подсвеченной строки по цвету полоски
-PIN, PINNED = "\ue718", "\ue841"  # значки пина из шрифта Segoe MDL2 Assets
+# шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
+PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
+             (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
 BADGES = {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")}  # плашка тарифа: фон, текст
 
 
@@ -230,6 +232,27 @@ def rounded_bar(pct, w, h, color, bg=BG):
     return img.resize((w, h), Image.LANCZOS)
 
 
+def pin_image(pinned, size, bg=BG):
+    """Значок пина: откреплён - контур с наклоном 45°, закреплён - заливка, игла вертикально вниз."""
+    k = 4  # рисуем крупно и уменьшаем - гладкие края после поворота
+    img = Image.new("RGBA", (size * k, size * k), (0, 0, 0, 0))
+    for path, outline, filled, needle in PIN_FONTS:
+        try:
+            font = ImageFont.truetype(path, int(size * k * 0.8))
+        except OSError:
+            continue
+        d = ImageDraw.Draw(img)
+        # залитый глиф - только «головка» без иглы, поэтому кладём его поверх контура
+        for glyph in (outline, filled) if pinned else (outline,):
+            d.text((size * k / 2, size * k / 2), glyph, font=font, anchor="mm", fill=FG if pinned else DIM)
+        # 225° = игла влево-вниз (наклон), 270° = вниз (воткнут); rotate() крутит против часовой
+        img = img.rotate((270 if pinned else 225) - needle, resample=Image.BICUBIC)
+        break
+    out = Image.new("RGB", img.size, bg)
+    out.paste(img, mask=img)
+    return out.resize((size, size), Image.LANCZOS)
+
+
 def tray_image(pcts):
     """Иконка трея: две вертикальные полоски (Claude, Codex), заполненные по максимальному окну."""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -373,7 +396,22 @@ class Widget:
         self.icon.stop()
         self.root.destroy()
 
-    def _section(self, row, title, windows, age, plan, pin=False):
+    def _titlebar(self):
+        """Шапка: название и версия слева, время обновления и пин справа."""
+        bar = tk.Frame(self.card, bg=BG)
+        bar.grid(row=0, column=0, columnspan=4, sticky="ew")
+        tk.Label(bar, text="Tollgate", bg=BG, fg=FG, font=("Segoe UI Semibold", 10)).pack(side="left")
+        tk.Label(bar, text=f"v{__version__}", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="left", padx=(self.px(5), 0), pady=(self.px(2), 0))
+        img = ImageTk.PhotoImage(pin_image(self.pinned, self.px(16)))
+        self.images.append(img)
+        pin = tk.Label(bar, image=img, bg=BG, bd=0, cursor="hand2")
+        pin.pack(side="right", padx=(self.px(8), 0))
+        pin.bind("<Button-1>", lambda e: self.toggle_pin())
+        tk.Label(bar, text=f"обновлено {datetime.now():%H:%M}", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="right")
+        tk.Frame(self.card, bg=TRACK, height=1).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(self.px(8), self.px(10)))
+        return 2  # следующая свободная строка грида
+
+    def _section(self, row, title, windows, age, plan):
         """Заголовок провайдера и его полоски, возвращает следующую строку грида."""
         head = tk.Frame(self.card, bg=BG)
         head.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, self.px(6)))
@@ -383,11 +421,6 @@ class Widget:
         if name:
             bg, fg = BADGES[title]
             tk.Label(head, text=name, bg=bg, fg=fg, font=("Segoe UI Semibold", 8), padx=self.px(6)).pack(side="left", padx=(self.px(8), 0))
-        if pin:
-            b = tk.Label(head, text=PINNED if self.pinned else PIN, bg=BG, fg=FG if self.pinned else DIM,
-                         font=("Segoe MDL2 Assets", 10), cursor="hand2")
-            b.pack(side="right", padx=(self.px(8), 0))
-            b.bind("<Button-1>", lambda e: self.toggle_pin())
         tk.Label(head, text=age, bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(side="right")
         row += 1
         if not windows:
@@ -421,12 +454,12 @@ class Widget:
         for w in self.card.winfo_children():
             w.destroy()
         self.images.clear()
-        row = 0
+        row = self._titlebar()
         for i, (name, windows, age, plan) in enumerate(data):
             if i:
                 tk.Frame(self.card, bg=TRACK, height=1).grid(row=row, column=0, columnspan=4, sticky="ew", pady=(self.px(4), self.px(10)))
                 row += 1
-            row = self._section(row, name, windows, age, plan, pin=i == 0)
+            row = self._section(row, name, windows, age, plan)
         # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами
         self.icon.icon = tray_image([max((p for _, p, _ in w), default=None) for _, w, _, _ in data])
         tip = "\n".join(f"{n}: " + (", ".join(f"{l} {p}%" for l, p, _ in w) or "нет данных") for n, w, _, _ in data)
