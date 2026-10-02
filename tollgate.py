@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import base64
 import ctypes
@@ -41,27 +41,27 @@ ALERT_BG = {AMBER: "#fff4e0", RED: "#ffeceb"}  # фон подсвеченной
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
              (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
-GEAR, REFRESH = "\ue713", "\ue72c"  # шестерёнка и стрелка обновления - одинаковые в обоих шрифтах
+GEAR, REFRESH, CLOCK = "\ue713", "\ue72c", "\ue823"  # шестерёнка, обновление, часы - одинаковые в обоих шрифтах
 BADGES = {"Claude": ("#fbeee8", "#b4583a"), "Codex": ("#e3f4ee", "#0b7d61")}  # плашка тарифа: фон, текст
 
 # --- локализация -------------------------------------------------------------------------------
 LANGS = {"ru": "Русский", "en": "English", "zh": "中文"}
 STRINGS = {
-    "ru": {"no_data": "нет данных", "now": "сейчас", "min_ago": "{n} мин назад",
-           "h_ago": "{n} ч назад", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
-           "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n} дн",
+    "ru": {"no_data": "нет данных", "ago_s": "{n}с", "ago_m": "{n}м",
+           "ago_h": "{n}ч", "ago_d": "{n}д", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
+           "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
            "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}",
            "language": "Язык", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
-    "en": {"no_data": "no data", "now": "now", "min_ago": "{n} min ago",
-           "h_ago": "{n} h ago", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
-           "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n} d",
+    "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
+           "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
+           "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
            "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}",
            "language": "Language", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
-    "zh": {"no_data": "无数据", "now": "刚刚", "min_ago": "{n} 分钟前",
-           "h_ago": "{n} 小时前", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
-           "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n} 天",
+    "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
+           "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
+           "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
            "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置",
            "language": "语言", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
@@ -215,13 +215,15 @@ def fmt_left(reset_ts):
 
 
 def fmt_age(ts):
-    """Возраст данных: 'сейчас', '5 мин назад', '3 ч назад'."""
+    """Возраст данных коротко: 12с, 3м, 2ч, 1д."""
     if not ts:
         return T("no_data")
-    mins = int((time.time() - ts) // 60)
-    if mins < 1:
-        return T("now")
-    return T("min_ago", n=mins) if mins < 60 else T("h_ago", n=mins // 60)
+    sec = max(0, int(time.time() - ts))
+    if sec < 60:
+        return T("ago_s", n=sec)
+    if sec < 3600:
+        return T("ago_m", n=sec // 60)
+    return T("ago_h", n=sec // 3600) if sec < 86400 else T("ago_d", n=sec // 86400)
 
 
 def bar_color(p):
@@ -249,7 +251,7 @@ def load(reader):
 
 
 def age_text(status):
-    """Подпись возраста данных: время -> 'сейчас' / '5 мин назад', текст ошибки - как есть."""
+    """Подпись возраста данных: время -> '12с' / '3м', текст ошибки - как есть."""
     return status if isinstance(status, str) else fmt_age(status)
 
 
@@ -346,8 +348,16 @@ def work_area():
 
 
 # --- окно --------------------------------------------------------------------------------------
+def row_style(pct):
+    """Цвет полоски, подсвечена ли строка, фон строки - по проценту заполнения окна."""
+    color = bar_color(pct)
+    hot = pct >= THRESHOLDS[0]
+    return color, hot, ALERT_BG[color] if hot else BG
+
+
 class Widget:
     PROVIDERS = (("Claude", read_claude, read_claude_plan), ("Codex", read_codex, read_codex_plan))
+    ANIM_FRAMES, ANIM_MS = 12, 25  # анимация полоски: ~0.3 с
 
     def __init__(self):
         global LANG
@@ -357,8 +367,13 @@ class Widget:
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
         self.s = self.root.winfo_fpixels("1i") / 96  # коэффициент масштабирования экрана
-        self.card = None  # рамка с содержимым, пересобирается в refresh()
-        self.images = []  # держим ссылки на PhotoImage, иначе tk их выбросит
+        self.card = None  # рамка с содержимым: строится один раз, дальше обновляется на месте
+        self.layout_key = None  # структура панели - пересборка только при её изменении
+        self.refs = {}  # ссылки на элементы, которые меняются при обновлении
+        self.rows = []  # строки полосок (для отмены анимаций при пересборке)
+        self.statuses = {}  # время данных по провайдерам - для ежесекундного тика возраста
+        self.tray_state = None  # что сейчас нарисовано в трее - не дёргать иконку без изменений
+        self.placed = None  # размер, под который окно уже прижато к углу
         self.visible = False
         self.hidden_at = 0.0
         self.rounded = False
@@ -381,6 +396,7 @@ class Widget:
         threading.Thread(target=self.icon.run, daemon=True).start()
         self._poll()
         self.refresh()
+        self._tick()
         if self.pinned:  # закреплённая панель видна сразу после запуска
             self.show(focus=False)
 
@@ -413,16 +429,20 @@ class Widget:
             self.show()
 
     def _place(self):
-        """Прижать панель к правому нижнему углу рабочей области с отступом MARGIN."""
+        """Прижать панель к правому нижнему углу рабочей области - только если размер изменился."""
         self.root.update_idletasks()
-        right, bottom = work_area()
         w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        if self.placed == (w, h):
+            return
+        right, bottom = work_area()
         self.root.geometry(f"{w}x{h}+{right - w - self.px(MARGIN)}+{bottom - h - self.px(MARGIN)}")
+        self.placed = (w, h)
 
     def show(self, focus=True):
         self.visible = True
         self.auto_shown = not focus
         self.view = "limits"  # открытая заново панель всегда начинается с лимитов
+        self.placed = None  # рабочая область могла измениться - прижать заново
         self.refresh()
         self.root.deiconify()
         if not self.rounded:  # скругление окна средствами Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = ROUND)
@@ -450,7 +470,7 @@ class Widget:
         self.pinned = not self.pinned
         self.auto_shown = False
         self._save_state()
-        self.refresh()
+        self._set_image(self.refs["pin"], pin_image(self.pinned, self.px(16)))  # только значок, без пересборки
 
     def toggle_settings(self):
         self.view = "limits" if self.view == "settings" else "settings"
@@ -494,59 +514,71 @@ class Widget:
         self.icon.stop()
         self.root.destroy()
 
-    def _icon_button(self, parent, image, command, gap=8):
-        """Кликабельный значок в шапке, gap - отступ слева."""
-        img = ImageTk.PhotoImage(image)
-        self.images.append(img)
-        b = tk.Label(parent, image=img, bg=BG, bd=0, cursor="hand2")
-        b.pack(side="right", padx=(self.px(gap), 0))
-        b.bind("<Button-1>", lambda e: command())
+    # --- построение (один раз на структуру) ---------------------------------------------------
+    @staticmethod
+    def _set_image(label, image):
+        """Поменять картинку у Label; ссылка хранится на самом Label, иначе tk её выбросит."""
+        label.img = ImageTk.PhotoImage(image)
+        label.configure(image=label.img)
 
-    def _titlebar(self, freshest):
+    def _icon_button(self, parent, image, command=None, gap=8):
+        """Значок справа в строке, gap - отступ слева; с command - кликабельный."""
+        b = tk.Label(parent, bg=BG, bd=0, cursor="hand2" if command else "")
+        self._set_image(b, image)
+        b.pack(side="right", padx=(self.px(gap), self.px(2)))
+        if command:
+            b.bind("<Button-1>", lambda e: command())
+        return b
+
+    def _titlebar(self):
         """Шапка: название и версия слева; возраст самых свежих данных, шестерёнка и пин справа."""
         bar = tk.Frame(self.card, bg=BG)
         bar.grid(row=0, column=0, columnspan=4, sticky="ew")
         tk.Label(bar, text="Tollgate", bg=BG, fg=FG, font=F(10, bold=True, lang="en")).pack(side="left")
         tk.Label(bar, text=f"v{__version__}", bg=BG, fg=DIM, font=F(8, lang="en")).pack(side="left", padx=(self.px(5), 0), pady=(self.px(2), 0))
-        self._icon_button(bar, pin_image(self.pinned, self.px(16)), self.toggle_pin)
+        self.refs["pin"] = self._icon_button(bar, pin_image(self.pinned, self.px(16)), self.toggle_pin)
         self._icon_button(bar, glyph_image(GEAR, FG if self.view == "settings" else DIM, self.px(16)), self.toggle_settings)
-        tk.Label(bar, text=fmt_age(freshest), bg=BG, fg=DIM, font=F(8)).pack(side="right")
+        self.refs["age"] = tk.Label(bar, bg=BG, fg=DIM, font=F(8))
+        self.refs["age"].pack(side="right")
         self._icon_button(bar, glyph_image(REFRESH, DIM, self.px(13)), self.refresh, gap=0)  # клик - обновить вручную
         tk.Frame(self.card, bg=TRACK, height=1).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(self.px(8), self.px(10)))
         return 2  # следующая свободная строка грида
 
     def _section(self, row, title, windows, age, plan):
-        """Заголовок провайдера и его полоски, возвращает следующую строку грида."""
+        """Заголовок провайдера и его полоски; ссылки на изменяемые элементы - в self.refs[title]."""
+        ref = self.refs[title] = {"rows": {}}
         head = tk.Frame(self.card, bg=BG)
         head.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, self.px(6)))
         tk.Label(head, text="●", bg=BG, fg=DOTS[title], font=F(9, lang="en")).pack(side="left")
         tk.Label(head, text=title, bg=BG, fg=FG, font=F(11, bold=True, lang="en")).pack(side="left", padx=(self.px(4), 0))
-        name, until_text, until_color = plan
+        name, until_text, _ = plan
         if name:
             bg, fg = BADGES[title]
-            tk.Label(head, text=name, bg=bg, fg=fg, font=F(8, bold=True, lang="en"), padx=self.px(6)).pack(side="left", padx=(self.px(8), 0))
+            ref["badge"] = tk.Label(head, bg=bg, fg=fg, font=F(8, bold=True, lang="en"), padx=self.px(6))
+            ref["badge"].pack(side="left", padx=(self.px(8), 0))
         if until_text:
-            tk.Label(head, text=until_text, bg=BG, fg=until_color, font=F(8)).pack(side="left", padx=(self.px(6), 0))
-        tk.Label(head, text=age_text(age), bg=BG, fg=DIM, font=F(8)).pack(side="right", padx=(self.px(12), 0))  # отступ - не слипаться с датой
+            ref["until"] = tk.Label(head, bg=BG, font=F(8))
+            ref["until"].pack(side="left", padx=(self.px(6), 0))
+        ref["age"] = tk.Label(head, bg=BG, fg=DIM, font=F(8))
+        ref["age"].pack(side="right")
+        if not isinstance(age, str):  # у ошибки значка нет - только текст
+            self._icon_button(head, glyph_image(CLOCK, DIM, self.px(12)), gap=12)  # отступ - не слипаться с датой
         row += 1
         if not windows:
             tk.Label(self.card, text=T("no_limits"), bg=BG, fg=DIM, font=F(9)).grid(row=row, column=0, columnspan=4, sticky="w")
             row += 1
-        for label, pct, left in windows:
-            left = T("reset") if left is None else left
-            color = bar_color(pct)
-            hot = pct >= THRESHOLDS[0]
-            bg = ALERT_BG[color] if hot else BG
-            img = ImageTk.PhotoImage(rounded_bar(pct, self.px(150), self.px(8), color, bg=bg))
-            self.images.append(img)
+        for label, pct, _ in windows:
             pad, ip = (0, self.px(4)), self.px(4)  # внешний отступ между строками, внутренний - для фона подсветки
-            tk.Label(self.card, text=win_name(label), bg=bg, fg=color if hot else DIM, font=F(9, bold=hot),
-                     anchor="w", padx=ip, pady=ip).grid(row=row, column=0, sticky="nsew", pady=pad)
-            tk.Label(self.card, image=img, bg=bg, bd=0, padx=self.px(10)).grid(row=row, column=1, sticky="nsew", pady=pad)
-            tk.Label(self.card, text=f"{pct}%", bg=bg, fg=color if hot else FG, font=F(9, bold=True, lang="en"), width=4,
-                     anchor="e").grid(row=row, column=2, sticky="nsew", pady=pad)
-            tk.Label(self.card, text=left, bg=bg, fg=color if hot else DIM, font=F(8), width=7, anchor="e",
-                     padx=ip).grid(row=row, column=3, sticky="nsew", pady=pad)
+            r = {"value": pct, "left_text": None, "anim": None,
+                 "name": tk.Label(self.card, text=win_name(label), anchor="w", padx=ip, pady=ip),
+                 "bar": tk.Label(self.card, bd=0, padx=self.px(10)),
+                 "pct": tk.Label(self.card, font=F(9, bold=True, lang="en"), width=4, anchor="e"),
+                 "left": tk.Label(self.card, font=F(8), anchor="w", padx=self.px(8))}
+            for col, key in enumerate(("name", "bar", "pct", "left")):
+                r[key].grid(row=row, column=col, sticky="nsew", pady=pad)
+            self._paint_row(r, pct, pct)
+            ref["rows"][label] = r
+            self.rows.append(r)
             row += 1
         return row
 
@@ -562,22 +594,22 @@ class Widget:
             b.pack(side="left", padx=(0, self.px(6)))
             b.bind("<Button-1>", lambda e, c=code: self.set_lang(c))
 
-    def refresh(self):
-        if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
-            self.root.after_cancel(self._job)
-        data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
-        # собираем новую рамку, пока старая на экране - без мигания и «схлопывания» окна
+    def _rebuild(self, data):
+        """Полная сборка панели - только при смене структуры (вид, язык, набор окон)."""
+        for r in self.rows:  # анимации старых строк больше некуда рисовать
+            if r["anim"]:
+                self.root.after_cancel(r["anim"])
+        self.refs, self.rows = {}, []
+        # собираем новую рамку, пока старая на экране, и подменяем одним шагом
         old_card = self.card
         self.card = tk.Frame(self.root, bg=BG, padx=self.px(18), pady=self.px(14))
-        self.images = []  # старые картинки живут в старом списке, пока старая рамка не удалена
-        freshest = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
-        row = self._titlebar(freshest)
+        self.card.grid_columnconfigure(3, weight=1)  # лишняя ширина - в последнюю колонку, а не между процентом и временем
+        row = self._titlebar()
         if self.view == "settings":
             self._settings(row)
             if self.limits_size:  # тот же размер, что у панели лимитов - окно не прыгает
                 self.card.configure(width=self.limits_size[0], height=self.limits_size[1])
                 self.card.grid_propagate(False)
-                self.card.grid_columnconfigure(3, weight=1)  # шапка и разделитель тянутся на всю ширину
         else:
             for i, (name, windows, age, plan) in enumerate(data):
                 if i:
@@ -588,14 +620,96 @@ class Widget:
             old_card.pack_forget()
             old_card.destroy()
         self.card.pack()
+
+    # --- обновление на месте (каждые 30 с) ----------------------------------------------------
+    def _paint_row(self, r, shown, final):
+        """Строка полоски: длина и число - по shown (кадр анимации), цвет и подсветка - по итоговому final."""
+        color, hot, bg = row_style(final)
+        self._set_image(r["bar"], rounded_bar(shown, self.px(150), self.px(8), color, bg=bg))
+        r["bar"].configure(bg=bg)
+        r["name"].configure(bg=bg, fg=color if hot else DIM, font=F(9, bold=hot))
+        r["pct"].configure(text=f"{round(shown)}%", bg=bg, fg=color if hot else FG)
+        r["left"].configure(bg=bg, fg=color if hot else DIM)
+
+    def _animate(self, r, start, end, step=1):
+        """Плавное изменение полоски и числа от start к end (ease-out)."""
+        t = step / self.ANIM_FRAMES
+        self._paint_row(r, start + (end - start) * (1 - (1 - t) ** 3), end)
+        r["anim"] = self.root.after(self.ANIM_MS, self._animate, r, start, end, step + 1) if step < self.ANIM_FRAMES else None
+
+    @staticmethod
+    def _set_text(label, text, **kw):
+        """Сменить текст, только если он действительно другой (без лишней перерисовки)."""
+        if label.cget("text") != text:
+            label.configure(text=text, **kw)
+        elif kw:
+            label.configure(**kw)
+
+    def _update(self, data):
+        """Обновить значения в уже построенной панели; изменившиеся проценты - с анимацией."""
+        if self.view != "limits":
+            return
+        for name, windows, _, plan in data:
+            ref = self.refs[name]
+            plan_name, until_text, until_color = plan
+            if "badge" in ref:
+                self._set_text(ref["badge"], plan_name)
+            if "until" in ref:
+                self._set_text(ref["until"], until_text, fg=until_color)
+            for label, pct, left in windows:
+                r = ref["rows"][label]
+                left = T("reset") if left is None else left
+                if left != r["left_text"]:
+                    r["left"].configure(text=left)
+                    r["left_text"] = left
+                if pct != r["value"]:
+                    if r["anim"]:
+                        self.root.after_cancel(r["anim"])
+                    start, r["value"] = r["value"], pct
+                    self._animate(r, start, pct)
+
+    def _tick(self):
+        """Раз в секунду: только тексты возраста данных (12с -> 13с), без чтения файлов."""
+        if self.visible and self.refs:
+            self._set_text(self.refs["age"], fmt_age(self.statuses.get("freshest")))
+            for name, _, _ in self.PROVIDERS:
+                if name in self.refs:
+                    self._set_text(self.refs[name]["age"], age_text(self.statuses.get(name)))
+        self.root.after(1000, self._tick)
+
+    def _layout_key(self, data):
+        """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
+        if self.view == "settings":
+            return "settings", LANG
+        return "limits", LANG, tuple((n, tuple(l for l, _, _ in w), bool(p[0]), bool(p[1]), isinstance(a, str))
+                                     for n, w, a, p in data)
+
+    def refresh(self):
+        if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
+            self.root.after_cancel(self._job)
+        data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
+        self.statuses = {name: st for name, _, st, _ in data}
+        self.statuses["freshest"] = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
+        key = self._layout_key(data)
+        if key != self.layout_key:
+            self._rebuild(data)
+            self.layout_key = key
+        self._update(data)
+        self.refs["age"].configure(text=fmt_age(self.statuses["freshest"]))
+        for name, _, st, _ in data:
+            if name in self.refs:
+                self.refs[name]["age"].configure(text=age_text(st))
         if self.view == "limits":
             self.root.update_idletasks()
             self.limits_size = (self.card.winfo_reqwidth(), self.card.winfo_reqheight())
-        # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами
-        self.icon.icon = tray_image([max((p for _, p, _ in w), default=None) for _, w, _, _ in data])
+        # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами - только при изменениях
+        pcts = [max((p for _, p, _ in w), default=None) for _, w, _, _ in data]
         tip = "\n".join(f"{n}: " + (", ".join(f"{win_name(l)} {p}%" for l, p, _ in w) or T("no_data")) for n, w, _, _ in data)
-        self.icon.title = tip[:127]  # лимит длины подсказки в Windows
-        if self.visible:  # высота могла измениться - заново прижать к углу
+        if (pcts, tip) != self.tray_state:
+            self.icon.icon = tray_image(pcts)
+            self.icon.title = tip[:127]  # лимит длины подсказки в Windows
+            self.tray_state = (pcts, tip)
+        if self.visible:  # размер мог измениться - заново прижать к углу
             self._place()
         self._job = self.root.after(REFRESH_MS, self.refresh)
         self._check_alerts(data)  # последним: может открыть панель и вложенно вызвать refresh, который переставит таймер
