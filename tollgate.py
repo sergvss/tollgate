@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 import base64
 import ctypes
@@ -609,7 +609,7 @@ class Widget:
         self.bar_w = self.px(150)
         # собираем новую рамку, пока старая на экране, и подменяем одним шагом
         old_card = self.card
-        self.card = tk.Frame(self.root, bg=BG, padx=self.px(18), pady=self.px(14))
+        self.card = tk.Frame(self.root, bg=BG, padx=self.px(12), pady=self.px(14))
         row = self._titlebar()
         if self.view == "settings":
             self._settings(row)
