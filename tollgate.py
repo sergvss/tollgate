@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.6.3"
+__version__ = "0.7.0"
 
 import base64
 import ctypes
@@ -70,7 +70,7 @@ ALERT_AT = 80  # выбранный первый порог, задаётся и
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
              (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
-GEAR, REFRESH, CLOCK = "\ue713", "\ue72c", "\ue823"  # шестерёнка, обновление, часы - одинаковые в обоих шрифтах
+GEAR, REFRESH, CLOCK, CLOSE = "\ue713", "\ue72c", "\ue823", "\ue711"  # шестерёнка, обновление, часы, крестик - одинаковые в обоих шрифтах
 
 # --- локализация -------------------------------------------------------------------------------
 LANGS = {"ru": "Русский", "en": "English", "zh": "中文"}
@@ -79,19 +79,16 @@ STRINGS = {
            "ago_h": "{n}ч", "ago_d": "{n}д", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
            "left_hm": "{h}ч {m}м", "left_m": "{m}м", "eta": "~{left}", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
-           "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}", "sub_title": "Tollgate: подписка заканчивается",
            "alerts": "Уведомлять при (95% - всегда)", "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
     "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
            "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
            "left_hm": "{h}h {m}m", "left_m": "{m}m", "eta": "~{left}", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
-           "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}", "sub_title": "Tollgate: subscription ending",
            "alerts": "Alert at (95% - always)", "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
     "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
            "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
            "left_hm": "{h}小时{m}分", "left_m": "{m}分", "eta": "约{left}", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
-           "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置", "sub_title": "Tollgate: 订阅即将到期",
            "alerts": "提醒阈值（95% 始终提醒）", "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
 }
 LANG = "ru"  # текущий язык, задаётся из state.json и в настройках
@@ -536,8 +533,8 @@ class Widget:
         self.visible = False
         self.hidden_at = 0.0
         self.rounded = False
-        self.auto_shown = False  # панель открыта уведомлением, а не пользователем
         self.alerted = {}  # (провайдер, окно) -> последний порог, о котором уже уведомили
+        self.toasts = {}  # (провайдер, окно или "plan") -> плашка-уведомление {win, refs, style, values}
         self.view = "limits"  # что показывает панель: limits или settings
         self.limits_size = None  # размер панели лимитов - настройки открываются в том же размере
         self.ip = 0  # общий внутренний отступ слева и справа (задаётся при сборке - зависит от масштаба)
@@ -622,7 +619,7 @@ class Widget:
 
     def show(self, focus=True):
         self.visible = True
-        self.auto_shown = not focus
+        self._toast_close_all()  # панель открыта - плашки свою задачу выполнили
         self.view = "limits"  # открытая заново панель всегда начинается с лимитов
         self.placed = None  # рабочая область могла измениться - прижать заново
         self.refresh()
@@ -651,7 +648,6 @@ class Widget:
 
     def toggle_pin(self):
         self.pinned = not self.pinned
-        self.auto_shown = False
         self._save_state()
         self._set_image(self.refs["pin"], pin_image(self.pinned, self.px(16)))  # только значок, без пересборки
 
@@ -660,7 +656,6 @@ class Widget:
 
     def _switch_view(self):
         self.view = "limits" if self.view == "settings" else "settings"
-        self.auto_shown = False
         self.refresh()
 
     def _freeze(self, on):
@@ -725,40 +720,128 @@ class Widget:
         DPI = dpi
         self.placed = None  # размер окна изменится - прижать к углу заново
 
-    def _auto_hide(self):
-        if self.auto_shown and not self.pinned:
-            self.hide()
-
-    def _notify(self, lines, title):
-        try:
-            self.icon.notify("\n".join(lines), title)
-        except Exception:
-            pass  # уведомления могут быть отключены в Windows - виджет работает и без них
-
     def _check_alerts(self, data):
-        """Уведомление Windows и показ панели, когда окно лимита переходит порог 80% / 95%;
-        уведомление (без показа панели) за 3 дня до окончания подписки."""
-        if not self.icon.visible:  # иконка трея ещё не поднялась - уведомить нечем, проверим в следующий раз
-            return
-        hot, subs = [], []
-        for name, windows, _, (_, until_text, until_color) in data:
+        """Плашки-уведомления (свои окна, а не уведомления Windows - работают и в режиме «Не беспокоить»).
+        Окно лимита перешло порог (выбранный или 95%) - плашка с его строкой; за 3 дня до конца подписки - плашка со сроком.
+        Плашка обновляется на месте и висит, пока её не закроют; сбросилось окно или продлилась подписка - уходит сама."""
+        live = {}  # ключ плашки -> свежие значения для неё
+        fresh = set()  # плашки, которые надо показать (заново)
+        for name, windows, _, (plan_name, until_text, until_color) in data:
             for label, pct, left, _ in windows:
                 key = (name, label)
                 level = max((t for t in (ALERT_AT, ALERT_ALWAYS) if pct >= t), default=0)
                 if level > self.alerted.get(key, 0):
-                    hot.append(f"{name} {win_name(label)}: {pct}%" + (T("alert_reset", left=left) if left else ""))
+                    fresh.add(key)  # новый порог - плашка заново, даже если прошлую закрыли
                 self.alerted[key] = level  # после сброса окна уровень падает и уведомление сработает снова
+                if level:
+                    live[key] = (pct, left)
             soon = until_color == AMBER  # load_plan красит срок жёлтым за 3 дня до окончания
             if soon and not self.alerted.get((name, "plan")):
-                subs.append(f"{name}: {until_text}")
+                fresh.add((name, "plan"))
             self.alerted[(name, "plan")] = soon  # после продления флаг сбросится - в следующий раз уведомит снова
-        if subs:
-            self._notify(subs, T("sub_title"))
-        if hot:
-            self._notify(hot, T("alert_title"))
-            if not self.visible:
-                self.show(focus=False)
-                self.root.after(10_000, self._auto_hide)
+            if soon:
+                live[(name, "plan")] = (plan_name, until_text)
+        for key in list(self.toasts):
+            if key not in live:  # окно сбросилось, подписка продлена
+                self._toast_close(key)
+        for key, values in live.items():
+            if key in fresh or key in self.toasts:
+                self._toast_show(key, values)
+        self._toast_place()
+
+    # --- плашки-уведомления ----------------------------------------------------------------------
+    def _toast_show(self, key, values):
+        """Собрать плашку (или пересобрать под новые язык/тему/масштаб) и обновить её значения."""
+        style = LANG, THEME, SCALE, DPI
+        t = self.toasts.get(key)
+        if t and t["style"] != style:
+            self._toast_close(key)
+            t = None
+        if not t:
+            t = self.toasts[key] = self._toast_build(key, values)
+            t["style"] = style
+        if t["values"] == values:
+            return
+        t["values"] = values
+        r = t["refs"]
+        if key[1] == "plan":
+            r["until"].configure(text=values[1])
+            return
+        pct, left = values
+        color = bar_color(pct)
+        self._set_image(r["bar"], rounded_bar(pct, self.px(90), self.px(6), color))
+        r["name"].configure(fg=color)
+        r["pct"].configure(text=f"{pct}%", fg=color)
+        r["left"].configure(text=left or "")
+
+    def _toast_build(self, key, values):
+        """Плашка в одну строку в стиле панели: провайдер, окно, полоска, процент, до сброса (значок часов), крестик.
+        Для подписки: провайдер, тариф, срок. Отдельное окно поверх всех, фокус не забирает."""
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=BG)
+        f = tk.Frame(win, bg=BG, padx=self.px(12), pady=self.px(9))
+        f.pack()
+        refs = {}
+        items = [(tk.Label(f, text=key[0], bg=BG, fg=FG, font=F(10, bold=True, lang="en")), 0)]
+        if key[1] == "plan":
+            refs["until"] = tk.Label(f, bg=BG, fg=AMBER, font=F(8))
+            items += [(self._badge(f, values[0], *BADGES[key[0]]), 8), (refs["until"], 8)]
+        else:
+            refs["name"] = tk.Label(f, text=win_name(key[1]), bg=BG, font=F(9, bold=True))
+            refs["bar"] = tk.Label(f, bg=BG, bd=0)
+            refs["pct"] = tk.Label(f, bg=BG, font=F(9, bold=True, lang="en"))
+            refs["left"] = tk.Label(f, bg=BG, fg=DIM, font=F(8))
+            clock = tk.Label(f, bg=BG, bd=0)
+            self._set_image(clock, glyph_image(CLOCK, DIM, self.px(12)))
+            items += [(refs["name"], 8), (refs["bar"], 8), (refs["pct"], 8), (clock, 10), (refs["left"], 4)]
+        close = tk.Label(f, bg=BG, bd=0, cursor="hand2")
+        self._set_image(close, glyph_image(CLOSE, DIM, self.px(11)))
+        close.bind("<Button-1>", lambda e: (self._toast_close(key), self._toast_place()))
+        items.append((close, 12))
+        for w, gap in items:
+            w.pack(side="left", padx=(self.px(gap), 0))
+            if w is not close:  # клик по плашке - открыть панель
+                w.bind("<Button-1>", lambda e: self.show())
+        f.bind("<Button-1>", lambda e: self.show())
+        return {"win": win, "refs": refs, "values": None}
+
+    def _toast_place(self):
+        """Плашки - стопкой в правом нижнем углу (над панелью, если она видна); новые - выше."""
+        right, bottom = work_area()
+        y = (self.root.winfo_rooty() if self.visible else bottom) - self.px(MARGIN)
+        for t in self.toasts.values():
+            win = t["win"]
+            win.update_idletasks()
+            w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+            win.geometry(f"{w}x{h}+{right - w - self.px(MARGIN)}+{y - h}")
+            y -= h + self.px(8)
+            if win.state() == "withdrawn":
+                self._toast_reveal(win)
+
+    @staticmethod
+    def _toast_reveal(win):
+        """Показать плашку, не забирая фокус (WS_EX_NOACTIVATE), с малым скруглением углов: у него короткая
+        аккуратная тень, обычное скругление даёт тяжёлую тень, рассчитанную на большие окна."""
+        win.deiconify()
+        win.update_idletasks()
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetParent(win.winfo_id())
+        user32.SetWindowLongW(hwnd, -20, user32.GetWindowLongW(hwnd, -20) | 0x08000000)  # GWL_EXSTYLE |= WS_EX_NOACTIVATE
+        for attr, value in ((33, 3), (34, THEMES[THEME]["BORDER"])):  # DWMWCP_ROUNDSMALL, цвет рамки под тему
+            v = ctypes.c_uint(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
+
+    def _toast_close(self, key):
+        t = self.toasts.pop(key, None)
+        if t:
+            t["win"].destroy()
+
+    def _toast_close_all(self):
+        for key in list(self.toasts):
+            self._toast_close(key)
 
     def quit(self):
         self.icon.stop()

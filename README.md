@@ -51,7 +51,7 @@ A Windows tray icon (next to the clock) with a pop-up panel showing your **Claud
 
 | Situation | What Tollgate gives you |
 |---|---|
-| The Claude 5-hour limit ran out mid-task, with no warning | A notification at your threshold (70/80/90%) and always at 95%, plus a forecast: "at this pace it runs out in ~40m" |
+| The Claude 5-hour limit ran out mid-task, with no warning | A one-line alert at your threshold (70/80/90%) and always at 95% - shown even in Do Not Disturb - plus a forecast: "at this pace it runs out in ~40m" |
 | You use both Claude Code and Codex and lose track of which one has room left | Both providers in one panel, every limit window: 5h, 1d, 1w |
 | You work in the desktop app or an IDE, and the limits in the status line never refresh | Auto-refresh every 5 minutes, wherever you work |
 | You forgot when the subscription renews | Plan badge, end date and days left; a reminder 3 days before |
@@ -83,8 +83,8 @@ Cannot see the icon? It is hidden under the "^" arrow in the tray: drag it onto 
 
 - **Limits of both providers** - Claude Code (5h, week) and Codex (ChatGPT subscription windows): percentage, bar, time to reset and how fresh the data is.
 - **Forecast** - if at the current pace a limit runs out before it resets, the reset time is replaced with how long you have left (`~40m`), in amber. The pace is measured over the last hour of work.
-- **Notifications** - at the threshold you choose (70%, 80% or 90%; 80% by default) and always at 95%. The panel pops up for 10 seconds and the windows running out are highlighted.
-- **Subscription** - plan, end date and days left. 3 days before the end the date turns amber and a reminder arrives; after the end it turns red. The Codex date is exact; the Claude one is an estimate (monthly renewal from the subscription date).
+- **Alerts** - at the threshold you choose (70%, 80% or 90%; 80% by default) and always at 95%, a one-line strip appears in the bottom-right corner, styled like the panel: provider, window, bar, percentage, time to reset. It is Tollgate's own window, not a Windows notification, so it shows up even in Do Not Disturb. It never takes focus and stays until you close it (×); when the window resets, it goes away by itself. Several strips stack. In the panel the windows running out are highlighted.
+- **Subscription** - plan, end date and days left. 3 days before the end the date turns amber and a reminder strip appears; after the end it turns red. The Codex date is exact; the Claude one is an estimate (monthly renewal from the subscription date).
 - **Auto-refresh** - every 5 minutes, wherever you work: terminal, desktop app, IDE.
 - **Settings** - language (Русский, English, 中文), theme (light, dark), scale (100%, 125%), notification threshold. Everything is saved; the language also applies to the Claude Code status line.
 - **Pin** - a pinned panel stays on screen and survives a restart.
@@ -96,6 +96,8 @@ Cannot see the icon? It is hidden under the "^" arrow in the tray: drag it onto 
 | Action | Result |
 |---|---|
 | Left-click the icon | Show / hide the panel (bottom right) |
+| Click an alert strip | Open the panel (the strips close) |
+| × on an alert strip | Close it - it comes back only at the next threshold |
 | Hover over the icon | Tooltip with the numbers for every window |
 | Right-click the icon | Version, Show, Refresh, Quit |
 | Click outside the panel or press Esc | Hide it (unless pinned) |
