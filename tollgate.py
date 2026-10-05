@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 import base64
 import ctypes
@@ -74,19 +74,19 @@ STRINGS = {
            "ago_h": "{n}ч", "ago_d": "{n}д", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
            "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
-           "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}",
+           "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}", "sub_title": "Tollgate: подписка заканчивается",
            "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
     "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
            "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
            "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
-           "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}",
+           "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}", "sub_title": "Tollgate: subscription ending",
            "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
     "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
            "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
            "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
-           "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置",
+           "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置", "sub_title": "Tollgate: 订阅即将到期",
            "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
 }
 LANG = "ru"  # текущий язык, задаётся из state.json и в настройках
@@ -597,23 +597,33 @@ class Widget:
         if self.auto_shown and not self.pinned:
             self.hide()
 
+    def _notify(self, lines, title):
+        try:
+            self.icon.notify("\n".join(lines), title)
+        except Exception:
+            pass  # уведомления могут быть отключены в Windows - виджет работает и без них
+
     def _check_alerts(self, data):
-        """Уведомление Windows и показ панели, когда окно лимита переходит порог 80% / 95%."""
+        """Уведомление Windows и показ панели, когда окно лимита переходит порог 80% / 95%;
+        уведомление (без показа панели) за 3 дня до окончания подписки."""
         if not self.icon.visible:  # иконка трея ещё не поднялась - уведомить нечем, проверим в следующий раз
             return
-        hot = []
-        for name, windows, _, _ in data:
+        hot, subs = [], []
+        for name, windows, _, (_, until_text, until_color) in data:
             for label, pct, left in windows:
                 key = (name, label)
                 level = max((t for t in THRESHOLDS if pct >= t), default=0)
                 if level > self.alerted.get(key, 0):
                     hot.append(f"{name} {win_name(label)}: {pct}%" + (T("alert_reset", left=left) if left else ""))
                 self.alerted[key] = level  # после сброса окна уровень падает и уведомление сработает снова
+            soon = until_color == AMBER  # load_plan красит срок жёлтым за 3 дня до окончания
+            if soon and not self.alerted.get((name, "plan")):
+                subs.append(f"{name}: {until_text}")
+            self.alerted[(name, "plan")] = soon  # после продления флаг сбросится - в следующий раз уведомит снова
+        if subs:
+            self._notify(subs, T("sub_title"))
         if hot:
-            try:
-                self.icon.notify("\n".join(hot), T("alert_title"))
-            except Exception:
-                pass  # уведомления могут быть отключены в Windows - панель всё равно откроется
+            self._notify(hot, T("alert_title"))
             if not self.visible:
                 self.show(focus=False)
                 self.root.after(10_000, self._auto_hide)
@@ -784,6 +794,10 @@ class Widget:
                     row += 1
                 row = self._section(row, name, windows, age, plan)
             self._fit_bars()
+            # панель лимитов не ниже настроек (мало окон, ошибка чтения) - окно не прыгает при переключении
+            gap = self._settings_height() - self.card.winfo_reqheight()
+            if gap > 0:
+                self.card.grid_rowconfigure(row, minsize=gap)  # пустая строка внизу сетки
         if old_card is None:
             self.card.place(x=0, y=0)
         else:  # подмена одним кадром: пока отрисовка заморожена, на экране старая картинка
@@ -792,6 +806,17 @@ class Widget:
             old_card.destroy()
             self.root.update_idletasks()
             self._freeze(False)
+
+    def _settings_height(self):
+        """Высота панели настроек: собрать её невидимо (без place), измерить и выбросить."""
+        saved = self.card, self.refs, self.heads, self.view
+        self.card, self.refs, self.heads, self.view = tk.Frame(self.root, padx=self.px(12), pady=self.px(14)), {}, [], "settings"
+        self._settings(self._titlebar())
+        self.root.update_idletasks()
+        h = self.card.winfo_reqheight()
+        self.card.destroy()
+        self.card, self.refs, self.heads, self.view = saved
+        return h
 
     def _grid_columns(self):
         """Ширина колонок по самому длинному возможному тексту - при обновлениях сетка не гуляет."""
