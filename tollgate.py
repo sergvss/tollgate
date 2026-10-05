@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.7"
+__version__ = "0.4.0"
 
 import base64
 import ctypes
@@ -72,19 +72,19 @@ LANGS = {"ru": "Русский", "en": "English", "zh": "中文"}
 STRINGS = {
     "ru": {"no_data": "нет данных", "ago_s": "{n}с", "ago_m": "{n}м",
            "ago_h": "{n}ч", "ago_d": "{n}д", "error": "ошибка: {e}", "reset": "сброшен", "left_dh": "{d}д {h}ч",
-           "left_hm": "{h}ч {m}м", "left_m": "{m}м", "expired": "истекла {date}", "days": "{date} · {n}д",
+           "left_hm": "{h}ч {m}м", "left_m": "{m}м", "eta": "~{left}", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
            "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}", "sub_title": "Tollgate: подписка заканчивается",
            "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
     "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
            "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
-           "left_hm": "{h}h {m}m", "left_m": "{m}m", "expired": "expired {date}", "days": "{date} · {n}d",
+           "left_hm": "{h}h {m}m", "left_m": "{m}m", "eta": "~{left}", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
            "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}", "sub_title": "Tollgate: subscription ending",
            "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
     "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
            "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
-           "left_hm": "{h}小时{m}分", "left_m": "{m}分", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
+           "left_hm": "{h}小时{m}分", "left_m": "{m}分", "eta": "约{left}", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
            "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置", "sub_title": "Tollgate: 订阅即将到期",
            "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
@@ -255,22 +255,105 @@ def bar_color(p):
     return GREEN if p < 50 else AMBER if p < 80 else RED
 
 
-def effective(windows):
-    """Окна -> [(имя, % 0..100, текст до сброса или None, если окно уже сбросилось)]."""
+def effective(windows, etas=None):
+    """Окна -> [(имя, % 0..100, текст до сброса или None, если окно уже сбросилось, текст прогноза или None)].
+    etas - {окно: когда при текущем темпе будет 100%} от History.track."""
     out = []
     for label, pct, reset in windows:
         if reset and reset < time.time():  # окно уже сбросилось, а свежих данных ещё нет
-            out.append((label, 0, None))
+            out.append((label, 0, None, None))
         else:
-            out.append((label, max(0, min(100, round(pct))), fmt_left(reset) if reset else ""))
+            eta = (etas or {}).get(label)
+            out.append((label, max(0, min(100, round(pct))), fmt_left(reset) if reset else "",
+                        T("eta", left=fmt_left(eta)) if eta else None))
     return out
 
 
-def load(reader):
-    """Безопасное чтение провайдера: (окна, время данных или текст ошибки)."""
+# --- история и прогноз -------------------------------------------------------------------------
+HISTORY_FILE = TOLLGATE_DIR / "history.jsonl"  # замеры: одна строка - {"t", "p", "w", "pct", "reset"}
+HISTORY_DAYS = 7  # сколько дней хранить замеры
+PACE_MIN, PACE_MAX = 10 * 60, 60 * 60  # темп считается по отрезку не короче 10 мин и не длиннее часа
+PACE_STALE = 30 * 60  # данные старше 30 мин - работа остановилась, «текущего темпа» нет
+
+
+def pace_end(samples, pct, ts, reset):
+    """Когда окно дойдёт до 100% при текущем темпе (unix) - или None: мало данных, данные старые,
+    расход не растёт или окно сбросится раньше. samples - замеры этого окна по возрастанию времени."""
+    if pct >= 100 or time.time() - ts > PACE_STALE:
+        return None
+    base = next((s for s in samples if ts - s["t"] <= PACE_MAX), None)  # самый ранний замер за последний час
+    if not base or ts - base["t"] < PACE_MIN:
+        return None
+    rate = (pct - base["pct"]) / (ts - base["t"])  # % в секунду
+    if rate <= 0:
+        return None
+    end = ts + (100 - pct) / rate
+    return end if time.time() < end and (not reset or end < reset) else None
+
+
+class History:
+    """Замеры лимитов за 7 дней (~/.tollgate/history.jsonl): пишутся, когда процент меняется.
+    Нужны для прогноза, позже - для графика расхода."""
+
+    def __init__(self):
+        self.samples = None  # файл читается при первом обращении
+
+    def _load(self):
+        """Прочитать замеры за 7 дней; старые и битые строки (обрыв при записи) выбросить и из файла."""
+        cutoff = time.time() - HISTORY_DAYS * 86400
+        try:
+            lines = HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        self.samples = []
+        for line in lines:
+            try:
+                s = json.loads(line)
+            except ValueError:
+                continue
+            if s.get("t", 0) > cutoff:
+                self.samples.append(s)
+        if len(self.samples) < len(lines):
+            self._write("w", self.samples)
+
+    @staticmethod
+    def _write(mode, samples):
+        try:
+            TOLLGATE_DIR.mkdir(exist_ok=True)
+            with HISTORY_FILE.open(mode, encoding="utf-8") as f:
+                f.writelines(json.dumps(s) + "\n" for s in samples)
+        except OSError:
+            pass  # история - не главное, виджет работает и без неё
+
+    def track(self, name, windows, ts):
+        """Записать новые значения окон провайдера; вернуть {окно: когда при текущем темпе будет 100%}."""
+        if self.samples is None:
+            self._load()
+        if not isinstance(ts, (int, float)):
+            return {}
+        etas = {}
+        for label, pct, reset in windows:
+            # замеры текущего окна: тот же сброс (источники Claude округляют его по-разному - допуск 2 мин)
+            mine = [s for s in self.samples if s["p"] == name and s["w"] == label and abs((s["reset"] or 0) - (reset or 0)) < 120]
+            if not mine or (ts > mine[-1]["t"] and pct != mine[-1]["pct"]):
+                s = {"t": ts, "p": name, "w": label, "pct": pct, "reset": reset}
+                self.samples.append(s)
+                self._write("a", [s])
+            end = pace_end(mine, pct, ts, reset)
+            if end:
+                etas[label] = end
+        return etas
+
+
+HISTORY = History()
+
+
+def load(reader, name=None):
+    """Безопасное чтение провайдера: (окна, время данных или текст ошибки).
+    С именем провайдера замеры пишутся в историю и считается прогноз; без имени (--print, тесты) - нет."""
     try:
         windows, ts = reader()
-        return effective(windows), ts
+        return effective(windows, HISTORY.track(name, windows, ts) if name else None), ts
     except Exception as ex:  # битый/отсутствующий файл не должен ронять виджет
         return [], T("error", e=type(ex).__name__)
 
@@ -610,7 +693,7 @@ class Widget:
             return
         hot, subs = [], []
         for name, windows, _, (_, until_text, until_color) in data:
-            for label, pct, left in windows:
+            for label, pct, left, _ in windows:
                 key = (name, label)
                 level = max((t for t in THRESHOLDS if pct >= t), default=0)
                 if level > self.alerted.get(key, 0):
@@ -698,9 +781,9 @@ class Widget:
         if not windows:
             tk.Label(self.card, text=T("no_limits"), bg=BG, fg=DIM, font=F(9)).grid(row=row, column=0, columnspan=4, sticky="w", padx=self.ip)
             row += 1
-        for label, pct, _ in windows:
+        for label, pct, *_ in windows:
             pad, ip = (0, self.px(4)), self.ip  # внешний отступ между строками, внутренний - для фона подсветки
-            r = {"value": pct, "left_text": None, "anim": None,
+            r = {"value": pct, "left_text": None, "anim": None, "eta": False,
                  "name": tk.Label(self.card, text=win_name(label), anchor="w", padx=ip, pady=ip),
                  "bar": tk.Label(self.card, bd=0, padx=self.px(10)),
                  "pct": tk.Label(self.card, font=F(9, bold=True, lang="en"), anchor="e", padx=ip),
@@ -827,7 +910,8 @@ class Widget:
             width(F(9, bold=True), *(win_name(k) for k in ("5h", "1d", "1w"))),  # подпись окна (жирная при подсветке)
             0,  # полоска - своей картинкой
             width(F(9, bold=True, lang="en"), "100%"),
-            width(F(8), T("left_dh", d=6, h=23), T("left_hm", h=23, m=59), T("reset")),  # время до сброса
+            width(F(8), T("left_dh", d=6, h=23), T("left_hm", h=23, m=59), T("reset"),  # время до сброса или прогноз
+                  T("eta", left=T("left_dh", d=6, h=23)), T("eta", left=T("left_hm", h=23, m=59))),
         ]
         for col, size in enumerate(self.colmin):
             self.card.grid_columnconfigure(col, minsize=size)
@@ -850,7 +934,7 @@ class Widget:
         r["bar"].configure(bg=bg)
         r["name"].configure(bg=bg, fg=color if hot else DIM, font=F(9, bold=hot))
         r["pct"].configure(text=f"{round(shown)}%", bg=bg, fg=color if hot else FG)
-        r["left"].configure(bg=bg, fg=color if hot else DIM)
+        r["left"].configure(bg=bg, fg=color if hot else AMBER if r["eta"] else DIM)  # прогноз - жёлтым
 
     def _animate(self, r, start, end, step=1):
         """Плавное изменение полоски и числа от start к end (ease-out)."""
@@ -875,17 +959,21 @@ class Widget:
             plan_name, until_text, until_color = plan
             if "until" in ref:
                 self._set_text(ref["until"], until_text, fg=until_color)
-            for label, pct, left in windows:
+            for label, pct, left, eta in windows:
                 r = ref["rows"][label]
-                left = T("reset") if left is None else left
+                left = eta or (T("reset") if left is None else left)  # лимит кончится раньше сброса - прогноз вместо сброса
                 if left != r["left_text"]:
                     r["left"].configure(text=left)
                     r["left_text"] = left
                 if pct != r["value"]:
                     if r["anim"]:
                         self.root.after_cancel(r["anim"])
+                    r["eta"] = bool(eta)
                     start, r["value"] = r["value"], pct
                     self._animate(r, start, pct)
+                elif bool(eta) != r["eta"]:  # процент тот же, а прогноз появился или пропал - перекрасить
+                    r["eta"] = bool(eta)
+                    self._paint_row(r, pct, pct)
 
     def _tick(self):
         """Раз в секунду: только тексты возраста данных (12с -> 13с), без чтения файлов."""
@@ -900,14 +988,14 @@ class Widget:
         """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
         if self.view == "settings":
             return "settings", LANG, THEME, SCALE, DPI
-        return "limits", LANG, THEME, SCALE, DPI, tuple((n, tuple(l for l, _, _ in w), p[0], bool(p[1]), isinstance(a, str))
+        return "limits", LANG, THEME, SCALE, DPI, tuple((n, tuple(l for l, *_ in w), p[0], bool(p[1]), isinstance(a, str))
                                      for n, w, a, p in data)
 
     def refresh(self):
         if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
             self.root.after_cancel(self._job)
         self._check_dpi()
-        data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
+        data = [(name, *load(reader, name), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
         self.statuses = {name: st for name, _, st, _ in data}
         self.statuses["freshest"] = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
         key = self._layout_key(data)
@@ -923,8 +1011,8 @@ class Widget:
             self.root.update_idletasks()
             self.limits_size = (self.card.winfo_reqwidth(), self.card.winfo_reqheight())
         # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами - только при изменениях
-        pcts = [max((p for _, p, _ in w), default=None) for _, w, _, _ in data]
-        tip = "\n".join(f"{n}: " + (", ".join(f"{win_name(l)} {p}%" for l, p, _ in w) or T("no_data")) for n, w, _, _ in data)
+        pcts = [max((p for _, p, *_ in w), default=None) for _, w, _, _ in data]
+        tip = "\n".join(f"{n}: " + (", ".join(f"{win_name(l)} {p}%" for l, p, *_ in w) or T("no_data")) for n, w, _, _ in data)
         if (pcts, tip) != self.tray_state:
             self.icon.icon = tray_image(pcts)
             self.icon.title = tip[:127]  # лимит длины подсказки в Windows
