@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 import base64
 import ctypes
@@ -928,6 +928,23 @@ class Widget:
             self._freeze(False)
             self.root.update_idletasks()  # дорисовать сразу, а не когда цикл событий дойдёт до простоя - иначе мелькает смесь экранов
 
+    def _prebuild_settings(self):
+        """Собрать экран настроек заранее и невидимо (без place), если его нет или он устарел (язык, тема, масштаб,
+        ширина лимитов). Тогда по шестерёнке - просто подмена готового экрана на любом, даже слабом компьютере."""
+        if self.view != "limits":
+            return
+        saved = self.card, self.refs, self.rows, self.heads, self.bar_w
+        self.view = "settings"
+        key = self._layout_key(None)  # ключ настроек от данных не зависит
+        screen = self.screens.get("settings")
+        if not screen or screen["key"] != key:
+            if screen:
+                self._drop(screen)
+            self._build(None)
+            self.screens["settings"] = {"key": key, "card": self.card, "refs": self.refs, "rows": self.rows, "heads": self.heads, "bar_w": self.bar_w}
+        self.view = "limits"
+        self.card, self.refs, self.rows, self.heads, self.bar_w = saved
+
     def _drop(self, screen):
         """Уничтожить экран; анимациям его строк больше некуда рисовать."""
         for r in screen["rows"]:
@@ -1097,6 +1114,8 @@ class Widget:
         if self.visible:  # размер мог измениться - заново прижать к углу
             self._place()
         self._job = self.root.after(REFRESH_MS, self.refresh)
+        if self.view == "limits":  # в простое собрать настройки заранее - первое открытие тоже без ожидания
+            self.root.after_idle(self._prebuild_settings)
         self._check_alerts(data)  # последним: может открыть панель и вложенно вызвать refresh, который переставит таймер
 
 
