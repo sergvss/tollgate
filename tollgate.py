@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 import base64
 import ctypes
@@ -12,6 +12,8 @@ import ctypes.wintypes
 import json
 import math
 import queue
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -30,6 +32,7 @@ TOLLGATE_DIR = HOME / ".tollgate"
 CLAUDE_STATUSLINE = TOLLGATE_DIR / "claude-usage.json"  # пишет statusline.py
 STATE_FILE = TOLLGATE_DIR / "state.json"  # состояние виджета: пин, язык, тема, масштаб
 REFRESH_MS = 30_000  # период обновления данных
+CLAUDE_USAGE_EVERY = 5 * 60  # как часто просить Claude Code обновить лимиты (claude -p /usage), с
 TAIL_BYTES = 512 * 1024  # сколько читать с конца лог-файла Codex
 MARGIN = 25  # отступ панели от краёв рабочей области, логические px
 
@@ -125,6 +128,24 @@ def window_label(minutes):
 def parse_iso(s):
     """ISO-строка -> unix-время (или None)."""
     return datetime.fromisoformat(s).timestamp() if s else None
+
+
+def refresh_claude_usage():
+    """Попросить Claude Code обновить лимиты: `claude -p /usage` спрашивает их у Anthropic и пишет в кэш ~/.claude.json
+    (тот же запрос Claude Code делает и сам, но редко; статус-строку десктоп-приложение не вызывает вовсе).
+    Tollgate токены не читает и сам в сеть не ходит. Запуск ~4 с - только из фонового потока."""
+    exe = shutil.which("claude")
+    if not exe:
+        return False
+    TOLLGATE_DIR.mkdir(exist_ok=True)
+    try:
+        # пустая папка и без пользовательских настроек: не запускаются MCP-серверы, плагины и их хуки, сессия не сохраняется
+        subprocess.run([exe, "-p", "/usage", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "project", "--no-chrome"],
+                       cwd=TOLLGATE_DIR, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=60, creationflags=subprocess.CREATE_NO_WINDOW)  # без мелькающего окна консоли
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
 
 
 def read_claude():
@@ -539,6 +560,8 @@ class Widget:
         self.cmds = queue.Queue()
         self.icon = pystray.Icon("tollgate", tray_image([None, None]), "Tollgate", self._menu())
         threading.Thread(target=self.icon.run, daemon=True).start()
+        self.usage_now = threading.Event()  # ручное обновление - не ждать 5 минут
+        threading.Thread(target=self._usage_loop, daemon=True).start()
         self._poll()
         self.refresh()
         self._tick()
@@ -550,12 +573,25 @@ class Widget:
         return pystray.Menu(
             pystray.MenuItem(f"Tollgate {__version__}", None, enabled=False),  # версия - видно, у кого какая сборка
             pystray.MenuItem(T("show"), lambda: self.cmds.put(self.toggle), default=True),
-            pystray.MenuItem(T("refresh"), lambda: self.cmds.put(self.refresh)),
+            pystray.MenuItem(T("refresh"), lambda: self.cmds.put(self.refresh_now)),
             pystray.MenuItem(T("quit"), lambda: self.cmds.put(self.quit)),
         )
 
     def px(self, v):
         return int(v * DPI * SCALE)
+
+    def _usage_loop(self):
+        """Фоновый поток: при старте и раз в 5 минут (или сразу по кнопке) обновить лимиты Claude, потом перечитать данные."""
+        while True:
+            if refresh_claude_usage():
+                self.cmds.put(self.refresh)  # tkinter - только из своего потока
+            self.usage_now.wait(CLAUDE_USAGE_EVERY)
+            self.usage_now.clear()
+
+    def refresh_now(self):
+        """Обновить вручную: перечитать файлы сейчас и попросить Claude Code обновить лимиты."""
+        self.usage_now.set()
+        self.refresh()
 
     def _poll(self):
         while not self.cmds.empty():
@@ -751,7 +787,7 @@ class Widget:
         self._icon_button(bar, glyph_image(GEAR, FG if self.view == "settings" else DIM, self.px(16)), self.toggle_settings)
         self.refs["age"] = tk.Label(bar, bg=BG, fg=DIM, font=F(8))
         self.refs["age"].pack(side="right")
-        self._icon_button(bar, glyph_image(REFRESH, DIM, self.px(13)), self.refresh, gap=0)  # клик - обновить вручную
+        self._icon_button(bar, glyph_image(REFRESH, DIM, self.px(13)), self.refresh_now, gap=0)  # клик - обновить вручную
         tk.Frame(self.card, bg=TRACK, height=1).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(self.px(8), self.px(10)))
         return 2  # следующая свободная строка грида
 

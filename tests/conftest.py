@@ -19,6 +19,7 @@ def home(tmp_path, monkeypatch):
     shutil.copy(FIXTURES / "claude-usage.json", tmp_path / ".tollgate" / "claude-usage.json")
     shutil.copy(FIXTURES / "codex-session.jsonl", sessions / "rollout-test.jsonl")
     monkeypatch.setattr(tollgate, "HOME", tmp_path)
+    monkeypatch.setattr(tollgate, "TOLLGATE_DIR", tmp_path / ".tollgate")
     monkeypatch.setattr(tollgate, "CLAUDE_JSON", tmp_path / ".claude.json")
     monkeypatch.setattr(tollgate, "CLAUDE_STATUSLINE", tmp_path / ".tollgate" / "claude-usage.json")
     monkeypatch.setattr(tollgate, "CODEX_SESSIONS", tmp_path / ".codex" / "sessions")
