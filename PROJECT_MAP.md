@@ -2,7 +2,7 @@
 
 Документ для передачи разработки: что где лежит, как устроено, какие решения уже приняты и почему. Читать вместе с [README](README.md) (для пользователя), [TODO](TODO.md) (план) и [CHANGELOG](CHANGELOG.md) (история версий).
 
-Текущая версия: **0.3.6** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
+Текущая версия: **0.3.7** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
 
 ---
 
@@ -24,6 +24,7 @@
 | `tollgate.py` | Всё приложение: чтение данных, иконка в трее, панель (tkinter + pystray + Pillow). ~900 строк |
 | `statusline.py` | Статус-строка Claude Code. Claude Code вызывает её после каждого ответа и передаёт JSON сессии с `rate_limits`; скрипт сохраняет их в `~/.tollgate/claude-usage.json` и печатает `5ч 31% · 1н 25%`. `--install` прописывает её в `~/.claude/settings.json` |
 | `install.bat` | Установка для пользователя: `pip install -r requirements.txt`, `statusline.py --install`, ярлык `Tollgate.lnk` в автозагрузке (`shell:startup`), запуск. Файл должен быть в CRLF (закреплено в `.gitattributes`) |
+| `uninstall.bat` | Удаление: остановить виджет, убрать `Tollgate.lnk` из автозагрузки, `statusline.py --uninstall` (убирает `statusLine`, только если она указывает на этот `statusline.py`). Данные `~/.tollgate` не удаляет. CRLF, как `install.bat` |
 | `requirements.txt` | `pystray`, `pillow` |
 | `tests/` | Тесты pytest: разбор форматов Claude/Codex (`test_readers.py`), `statusline.py` (`test_statusline.py`). Фикстуры с реальной структурой данных - `tests/fixtures/`, домашний каталог подменяется (`conftest.py` → фикстура `home`) |
 | `pytest.ini` | Настройки pytest: папка тестов, корень проекта в `sys.path` |
@@ -42,6 +43,7 @@
 | `~/.tollgate/state.json` | Настройки виджета: `{"pinned", "lang", "theme", "scale"}` |
 | `~/.claude/settings.json` → `statusLine` | Команда запуска `statusline.py` (абсолютный путь к python и к скрипту) |
 | `~/.claude/settings.json.bak-tollgate` | Бэкап настроек до установки статус-строки |
+| `~/.claude/settings.json.bak-tollgate-uninstall` | Бэкап настроек перед удалением статус-строки (`uninstall.bat`). Старый бэкап установки не восстанавливается - он откатил бы все правки пользователя после установки |
 | `shell:startup\Tollgate.lnk` | Автозапуск: `pythonw.exe "<путь>\tollgate.py"` |
 
 **Если переносишь папку проекта** - обнови путь в `statusLine` и в ярлыке автозапуска (или перезапусти `install.bat`; статус-строку он не перезапишет, если она уже есть, - её путь поправить руками).

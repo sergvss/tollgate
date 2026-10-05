@@ -4,7 +4,8 @@ Claude Code вызывает её после каждого ответа и пе
 Скрипт сохраняет свежие лимиты в ~/.tollgate/claude-usage.json (их читает tollgate.py)
 и печатает короткую строку с лимитами внизу Claude Code.
 
-python statusline.py --install  - прописать в ~/.claude/settings.json (только если статус-строка не задана)
+python statusline.py --install    - прописать в ~/.claude/settings.json (только если статус-строка не задана)
+python statusline.py --uninstall  - убрать оттуда (только если это статус-строка Tollgate)
 """
 import json
 import os
@@ -46,6 +47,20 @@ def install():
     print("Статус-строка Tollgate добавлена в", SETTINGS)
 
 
+def uninstall():
+    """Убирает statusLine из настроек Claude Code, только если она указывает на этот скрипт; остальное не трогает."""
+    sys.stdout.reconfigure(encoding="utf-8")
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8")) if SETTINGS.exists() else {}
+    if Path(__file__).resolve().as_posix() not in (settings.get("statusLine") or {}).get("command", ""):
+        print("Статус-строки Tollgate в settings.json нет - ничего не меняю.")
+        return
+    # бэкап под своим именем: settings.json.bak-tollgate хранит настройки до установки, его не перетираем
+    shutil.copy2(SETTINGS, SETTINGS.with_name("settings.json.bak-tollgate-uninstall"))
+    del settings["statusLine"]
+    SETTINGS.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print("Статус-строка Tollgate убрана из", SETTINGS)
+
+
 def main():
     data = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
     limits = data.get("rate_limits")
@@ -64,4 +79,4 @@ def main():
 
 
 if __name__ == "__main__":
-    install() if "--install" in sys.argv else main()
+    install() if "--install" in sys.argv else uninstall() if "--uninstall" in sys.argv else main()

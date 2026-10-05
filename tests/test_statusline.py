@@ -72,3 +72,27 @@ def test_install_does_not_replace_own_statusline(paths):
     statusline.install()
     assert statusline.SETTINGS.read_text(encoding="utf-8") == mine  # чужая статус-строка не тронута
     assert not statusline.SETTINGS.with_name("settings.json.bak-tollgate").exists()
+
+
+def test_uninstall_removes_only_own_statusline(paths):
+    statusline.SETTINGS.parent.mkdir()
+    statusline.SETTINGS.write_text('{"theme": "dark"}', encoding="utf-8")
+    statusline.install()
+    statusline.uninstall()
+    assert json.loads(statusline.SETTINGS.read_text(encoding="utf-8")) == {"theme": "dark"}  # остальное не тронуто
+    assert statusline.SETTINGS.with_name("settings.json.bak-tollgate-uninstall").exists()
+    assert json.loads(statusline.SETTINGS.with_name("settings.json.bak-tollgate").read_text(encoding="utf-8")) == {"theme": "dark"}
+
+
+def test_uninstall_keeps_foreign_statusline(paths):
+    statusline.SETTINGS.parent.mkdir()
+    mine = '{"statusLine": {"type": "command", "command": "python C:/other/statusline.py"}}'
+    statusline.SETTINGS.write_text(mine, encoding="utf-8")
+    statusline.uninstall()
+    assert statusline.SETTINGS.read_text(encoding="utf-8") == mine
+    assert not statusline.SETTINGS.with_name("settings.json.bak-tollgate-uninstall").exists()
+
+
+def test_uninstall_without_settings(paths):
+    statusline.uninstall()  # нет settings.json - просто сообщение, без ошибки
+    assert not statusline.SETTINGS.exists()

@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 
 import base64
 import ctypes
