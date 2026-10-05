@@ -1,0 +1,15 @@
+{
+  "oauthAccount": {
+    "organizationType": "claude_pro",
+    "subscriptionCreatedAt": "2026-10-02T08:17:34.514735Z"
+  },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1791223246012,
+    "utilization": {
+      "five_hour": {"utilization": 18, "resets_at": "2026-10-05T22:49:59.734199+00:00", "limit_dollars": null},
+      "seven_day": {"utilization": 32, "resets_at": "2026-10-06T01:59:59.734219+00:00", "limit_dollars": null},
+      "seven_day_opus": null,
+      "seven_day_sonnet": null
+    }
+  }
+}

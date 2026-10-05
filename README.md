@@ -33,7 +33,7 @@ install.bat
 
 Удаление: «Выход» в меню иконки, удалить `Tollgate.lnk` из `shell:startup` (Win+R → `shell:startup`) и блок `statusLine` из `~/.claude/settings.json`.
 
-Проверка без окна: `python -X utf8 tollgate.py --print`
+Проверка без окна: `python -X utf8 tollgate.py --print`. Тесты: `python -m pip install pytest`, затем `python -m pytest -q`.
 
 ## Управление
 

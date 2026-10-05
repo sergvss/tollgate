@@ -1,0 +1,3 @@
+{"timestamp":"2026-10-04T13:41:49.000Z","type":"session_meta","payload":{"id":"test","cwd":"C:\projects\demo"}}
+{"timestamp":"2026-10-04T13:41:57.212Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":12.5,"window_minutes":300,"resets_at":1791190000},"secondary":{"used_percent":3.0,"window_minutes":10080,"resets_at":1791726114},"plan_type":"prolite"}}}
+{"timestamp":"2026-10-04T13:42:10.000Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}

@@ -25,6 +25,9 @@
 | `statusline.py` | Статус-строка Claude Code. Claude Code вызывает её после каждого ответа и передаёт JSON сессии с `rate_limits`; скрипт сохраняет их в `~/.tollgate/claude-usage.json` и печатает `5ч 31% · 1н 25%`. `--install` прописывает её в `~/.claude/settings.json` |
 | `install.bat` | Установка для пользователя: `pip install -r requirements.txt`, `statusline.py --install`, ярлык `Tollgate.lnk` в автозагрузке (`shell:startup`), запуск. Файл должен быть в CRLF (закреплено в `.gitattributes`) |
 | `requirements.txt` | `pystray`, `pillow` |
+| `tests/` | Тесты pytest: разбор форматов Claude/Codex (`test_readers.py`), `statusline.py` (`test_statusline.py`). Фикстуры с реальной структурой данных - `tests/fixtures/`, домашний каталог подменяется (`conftest.py` → фикстура `home`) |
+| `pytest.ini` | Настройки pytest: папка тестов, корень проекта в `sys.path` |
+| `.github/workflows/tests.yml` | GitHub Actions: тесты на каждый push и PR, Windows, Python 3.10 и 3.13 |
 | `README.md` | Для пользователя: установка, управление, ограничения |
 | `TODO.md` | План разработки по эпикам E1-E6 с критериями готовности |
 | `CHANGELOG.md` | История версий |
@@ -140,7 +143,7 @@ powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='py
 - размеры окна совпадают в лимитах и настройках на всех языках, темах и масштабах;
 - кадры анимации пилюли в переключателях.
 
-Автотестов в репозитории пока нет - это задача E6 в TODO.md (pytest на разбор форматов Claude/Codex на фикстурах).
+Автотесты: `python -m pytest -q` - разбор форматов и `statusline.py`, без окна и без настоящих файлов пользователя. Те же тесты гоняет GitHub Actions на каждый push. Поменялся формат данных Claude/Codex - сначала обнови фикстуру в `tests/fixtures/`, потом код. Интерфейс автотестами не покрыт - его проверяют визуальным скриптом выше.
 
 ## 8. Выпуск версии
 
