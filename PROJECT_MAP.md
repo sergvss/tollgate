@@ -28,7 +28,7 @@
 | `requirements.txt` | `pystray`, `pillow` |
 | `tests/` | Тесты pytest: разбор форматов Claude/Codex (`test_readers.py`), `statusline.py` (`test_statusline.py`). Фикстуры с реальной структурой данных - `tests/fixtures/`, домашний каталог подменяется (`conftest.py` → фикстура `home`) |
 | `pytest.ini` | Настройки pytest: папка тестов, корень проекта в `sys.path` |
-| `.github/workflows/tests.yml` | GitHub Actions: тесты на каждый push и PR, Windows, Python 3.10 и 3.13 |
+| `.github/workflows/tests.yml` | GitHub Actions: тесты на каждый push в ветку и PR (не на теги - тег ставится на уже проверенный коммит), Windows, Python 3.10 и 3.13 |
 | `README.md` | Для пользователя: установка, управление, ограничения |
 | `TODO.md` | План разработки по эпикам E1-E6 с критериями готовности |
 | `CHANGELOG.md` | История версий |
