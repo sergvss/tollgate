@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 import base64
 import ctypes
@@ -48,6 +48,7 @@ THEMES = {
 }
 SCALES = (1.0, 1.25)  # масштаб интерфейса: как сейчас и крупнее
 THEME, SCALE = "light", 1.0  # текущие тема и масштаб, задаются из state.json и в настройках
+DPI = 1.0  # масштаб главного монитора (1.0 = 96 DPI), перечитывается при каждом обновлении
 
 
 def apply_theme(name):
@@ -102,8 +103,9 @@ def win_name(key):
 
 
 def F(size, bold=False, lang=None):
-    """Шрифт интерфейса: для китайского - Microsoft YaHei UI (в Segoe UI нет иероглифов)."""
-    size = round(size * SCALE)
+    """Шрифт интерфейса: для китайского - Microsoft YaHei UI (в Segoe UI нет иероглифов).
+    Размер в пикселях (отрицательный) по текущему DPI: пункты tk пересчитывает по DPI на момент запуска."""
+    size = -round(round(size * SCALE) * DPI * 96 / 72)
     if (lang or LANG) == "zh":
         return ("Microsoft YaHei UI", size, "bold") if bold else ("Microsoft YaHei UI", size)
     return ("Segoe UI Semibold", size) if bold else ("Segoe UI", size)
@@ -386,6 +388,17 @@ def work_area():
     return r.right, r.bottom
 
 
+def monitor_dpi():
+    """Масштаб главного монитора (на нём панель): 1.0 = 96 DPI, 2.5 = 250%. Меняется на ходу,
+    например при отключении внешнего монитора."""
+    user32 = ctypes.windll.user32
+    user32.MonitorFromPoint.restype = ctypes.c_void_p  # HMONITOR - указатель, не обрезать до int
+    mon = user32.MonitorFromPoint(ctypes.wintypes.POINT(0, 0), 1)  # MONITOR_DEFAULTTOPRIMARY
+    x, y = ctypes.c_uint(), ctypes.c_uint()
+    ctypes.windll.shcore.GetDpiForMonitor(ctypes.c_void_p(mon), 0, ctypes.byref(x), ctypes.byref(y))  # MDT_EFFECTIVE_DPI
+    return x.value / 96 if x.value else 1.0
+
+
 # --- окно --------------------------------------------------------------------------------------
 def row_style(pct):
     """Цвет полоски, подсвечена ли строка, фон строки - по проценту заполнения окна."""
@@ -399,13 +412,13 @@ class Widget:
     ANIM_FRAMES, ANIM_MS = 12, 25  # анимация полоски: ~0.3 с
 
     def __init__(self):
-        global LANG, SCALE
+        global LANG, SCALE, DPI
         self.root = tk.Tk()
         self.root.withdraw()  # на старте показываем только иконку в трее
         self.root.overrideredirect(True)  # без рамки и заголовка
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
-        self.dpi = self.root.winfo_fpixels("1i") / 96  # коэффициент масштабирования экрана
+        DPI = monitor_dpi()  # коэффициент масштабирования экрана
         self.card = None  # рамка с содержимым: строится один раз, дальше обновляется на месте
         self.layout_key = None  # структура панели - пересборка только при её изменении
         self.refs = {}  # ссылки на элементы, которые меняются при обновлении
@@ -456,7 +469,7 @@ class Widget:
         )
 
     def px(self, v):
-        return int(v * self.dpi * SCALE)
+        return int(v * DPI * SCALE)
 
     def _poll(self):
         while not self.cmds.empty():
@@ -566,6 +579,19 @@ class Widget:
         SCALE = scale
         self._save_state()
         self.refresh()
+
+    def _check_dpi(self):
+        """Сменился масштаб главного монитора (отключили внешний, поменяли масштаб в Windows) -
+        запомнить новый DPI; панель пересоберётся, потому что DPI входит в _layout_key."""
+        global DPI
+        dpi = monitor_dpi()
+        if dpi == DPI:
+            return
+        if self.limits_size:  # настройки откроются в размере панели лимитов уже нового DPI
+            k = dpi / DPI
+            self.limits_size = (round(self.limits_size[0] * k), round(self.limits_size[1] * k))
+        DPI = dpi
+        self.placed = None  # размер окна изменится - прижать к углу заново
 
     def _auto_hide(self):
         if self.auto_shown and not self.pinned:
@@ -848,13 +874,14 @@ class Widget:
     def _layout_key(self, data):
         """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
         if self.view == "settings":
-            return "settings", LANG, THEME, SCALE
-        return "limits", LANG, THEME, SCALE, tuple((n, tuple(l for l, _, _ in w), p[0], bool(p[1]), isinstance(a, str))
+            return "settings", LANG, THEME, SCALE, DPI
+        return "limits", LANG, THEME, SCALE, DPI, tuple((n, tuple(l for l, _, _ in w), p[0], bool(p[1]), isinstance(a, str))
                                      for n, w, a, p in data)
 
     def refresh(self):
         if getattr(self, "_job", None):  # ручное обновление не должно плодить таймеры
             self.root.after_cancel(self._job)
+        self._check_dpi()
         data = [(name, *load(reader), load_plan(plan)) for name, reader, plan in self.PROVIDERS]
         self.statuses = {name: st for name, _, st, _ in data}
         self.statuses["freshest"] = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
