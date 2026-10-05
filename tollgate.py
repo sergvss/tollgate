@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 import base64
 import ctypes
@@ -525,6 +525,7 @@ class Widget:
         self.root.configure(bg=BG)
         DPI = monitor_dpi()  # коэффициент масштабирования экрана
         self.card = None  # рамка с содержимым: строится один раз, дальше обновляется на месте
+        self.screens = {}  # вид -> готовый экран {key, card, refs, rows, heads, bar_w}: переключение без пересборки
         self.layout_key = None  # структура панели - пересборка только при её изменении
         self.refs = {}  # ссылки на элементы, которые меняются при обновлении
         self.rows = []  # строки полосок (для отмены анимаций при пересборке)
@@ -897,24 +898,53 @@ class Widget:
         self._choice(row, T("alerts"), [(t, "/".join(map(str, t)) or T("off"), "en" if t else None) for t in ALERT_PRESETS],
                      THRESHOLDS, self.set_alerts, last=True)
 
-    def _rebuild(self, data):
-        """Полная сборка панели - только при смене структуры (вид, язык, набор окон)."""
-        for r in self.rows:  # анимации старых строк больше некуда рисовать
+    def _show_screen(self, key, data):
+        """Показать экран текущего вида. Готовый с тем же ключом раскладки - просто подменить (быстро, без
+        дорисовки по частям), иначе собрать заново. Скрытый экран не уничтожается - переключение обратно тоже мгновенное."""
+        old_card = self.card
+        screen = self.screens.get(self.view)
+        if screen and screen["key"] == key:
+            self.card, self.refs, self.rows, self.heads, self.bar_w = (screen[k] for k in ("card", "refs", "rows", "heads", "bar_w"))
+            self._set_image(self.refs["pin"], pin_image(self.pinned, self.px(16)))  # пин могли переключить на другом экране
+        else:
+            if screen and screen["card"] is not old_card:  # устаревший скрытый экран этого вида
+                self._drop(screen)
+            self._build(data)
+            self.screens[self.view] = {"key": key, "card": self.card, "refs": self.refs, "rows": self.rows, "heads": self.heads, "bar_w": self.bar_w}
+        if old_card is None:
+            self.card.place(x=0, y=0)
+        elif old_card is not self.card:  # подмена одним кадром: пока отрисовка заморожена, на экране старая картинка
+            self._freeze(True)
+            self.card.place(x=0, y=0)
+            if any(s["card"] is old_card for s in self.screens.values()):
+                old_card.place_forget()  # готовый экран другого вида - спрятать до следующего переключения
+            else:
+                self._drop({"card": old_card, "rows": screen["rows"] if screen else []})
+            self.root.update_idletasks()
+            if self.visible:  # высота экранов разная - размер окна меняется тоже под заморозкой, вместе с содержимым
+                self._place()
+            self._freeze(False)
+            self.root.update_idletasks()  # дорисовать сразу, а не когда цикл событий дойдёт до простоя - иначе мелькает смесь экранов
+
+    def _drop(self, screen):
+        """Уничтожить экран; анимациям его строк больше некуда рисовать."""
+        for r in screen["rows"]:
             if r["anim"]:
                 self.root.after_cancel(r["anim"])
+        screen["card"].destroy()
+
+    def _build(self, data):
+        """Сборка экрана текущего вида в новой рамке self.card (ещё не показанной)."""
         self.refs, self.rows, self.heads = {}, [], []
         self.ip, self.bar_w = self.px(4), self.px(150)
-        # собираем новую рамку, пока старая на экране, и подменяем одним шагом
-        old_card = self.card
         self.card = tk.Frame(self.root, bg=BG, padx=self.px(12), pady=self.px(14))
         row = self._titlebar()
         if self.view == "settings":
             self._settings(row)
             self.card.grid_columnconfigure(3, weight=1)  # шапка тянется на всю ширину фиксированного окна
-            if self.limits_size:  # размер панели лимитов (окно не прыгает), но не меньше, чем нужно настройкам
+            if self.limits_size:  # ширина - как у панели лимитов (боковые края не прыгают), высота - своя
                 self.root.update_idletasks()
-                self.card.configure(width=max(self.limits_size[0], self.card.winfo_reqwidth()),
-                                    height=max(self.limits_size[1], self.card.winfo_reqheight()))
+                self.card.configure(width=max(self.limits_size[0], self.card.winfo_reqwidth()), height=self.card.winfo_reqheight())
                 self.card.grid_propagate(False)
         else:
             self._grid_columns()
@@ -924,35 +954,27 @@ class Widget:
                     row += 1
                 row = self._section(row, name, windows, age, plan)
             self._fit_bars()
-            # панель лимитов не меньше настроек (мало окон, ошибка чтения) - окно не прыгает при переключении
-            sw, sh = self._settings_size()
-            dw, dh = sw - self.card.winfo_reqwidth(), sh - self.card.winfo_reqheight()
+            # панель лимитов не уже настроек (мало окон, ошибка чтения) - боковые края не прыгают при переключении
+            sw = self._settings_width()
+            dw = sw - self.card.winfo_reqwidth()
             if dw > 0 and self.rows:  # удлинить полоски - правые края по-прежнему совпадают
                 self.bar_w += dw
                 for r in self.rows:
                     self._paint_row(r, r["value"], r["value"])
-            if dh > 0:  # невидимая распорка внизу: добирает высоту и не даёт быть уже настроек, даже когда полосок нет
-                # (тогда ширину задают заголовки, а их тексты - дата, возраст - появятся только в _update)
-                tk.Frame(self.card, bg=BG, width=sw - 2 * self.px(12), height=dh).grid(row=row, column=0, columnspan=4)
-        if old_card is None:
-            self.card.place(x=0, y=0)
-        else:  # подмена одним кадром: пока отрисовка заморожена, на экране старая картинка
-            self._freeze(True)
-            self.card.place(x=0, y=0)
-            old_card.destroy()
-            self.root.update_idletasks()
-            self._freeze(False)
+            # невидимая распорка 1px внизу держит ширину, даже когда полосок нет (тогда ширину задают заголовки,
+            # а их тексты - дата, возраст - появятся только в _update)
+            tk.Frame(self.card, bg=BG, width=sw - 2 * self.px(12), height=1).grid(row=row, column=0, columnspan=4)
 
-    def _settings_size(self):
-        """Размер панели настроек: собрать её невидимо (без place), измерить и выбросить."""
+    def _settings_width(self):
+        """Ширина панели настроек: собрать её невидимо (без place), измерить и выбросить."""
         saved = self.card, self.refs, self.heads, self.view
         self.card, self.refs, self.heads, self.view = tk.Frame(self.root, padx=self.px(12), pady=self.px(14)), {}, [], "settings"
         self._settings(self._titlebar())
         self.root.update_idletasks()
-        size = self.card.winfo_reqwidth(), self.card.winfo_reqheight()
+        width = self.card.winfo_reqwidth()
         self.card.destroy()
         self.card, self.refs, self.heads, self.view = saved
-        return size
+        return width
 
     def _grid_columns(self):
         """Ширина колонок по самому длинному возможному тексту - при обновлениях сетка не гуляет."""
@@ -1040,7 +1062,7 @@ class Widget:
     def _layout_key(self, data):
         """Всё, что меняет состав элементов панели. Совпало - обновляем на месте, иначе пересобираем."""
         if self.view == "settings":
-            return "settings", LANG, THEME, SCALE, DPI
+            return "settings", LANG, THEME, SCALE, DPI, self.limits_size and self.limits_size[0]  # ширина - от панели лимитов
         return "limits", LANG, THEME, SCALE, DPI, tuple((n, tuple(l for l, *_ in w), p[0], bool(p[1]), isinstance(a, str))
                                      for n, w, a, p in data)
 
@@ -1053,7 +1075,7 @@ class Widget:
         self.statuses["freshest"] = max((st for _, _, st, _ in data if isinstance(st, (int, float))), default=None)
         key = self._layout_key(data)
         if key != self.layout_key:
-            self._rebuild(data)
+            self._show_screen(key, data)
             self.layout_key = key
         self._update(data)
         self.refs["age"].configure(text=fmt_age(self.statuses["freshest"]))
