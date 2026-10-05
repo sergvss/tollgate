@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 import base64
 import ctypes
@@ -64,8 +64,9 @@ def apply_theme(name):
 
 
 apply_theme("light")
-ALERT_PRESETS = ((), (95,), (80, 95), (70, 90))  # пороги уведомлений на выбор в настройках; () - уведомления выключены
-THRESHOLDS = (80, 95)  # при каких % заполнения окна показывать уведомление, задаётся из state.json и в настройках
+ALERT_LEVELS = (70, 80, 90)  # первый порог уведомления - на выбор в настройках
+ALERT_ALWAYS = 95  # на 95% уведомление приходит всегда, отключить нельзя
+ALERT_AT = 80  # выбранный первый порог, задаётся из state.json и в настройках
 # шрифт значков Windows: (файл, контурный пин, залитый пин, угол иглы в глифе - градусы против часовой от «вправо»)
 PIN_FONTS = ((r"C:\Windows\Fonts\SegoeIcons.ttf", "\ue840", "\ue842", 225),  # Windows 11: пин наклонён
              (r"C:\Windows\Fonts\segmdl2.ttf", "\ue718", "\ue841", 180))  # Windows 10: пин лежит горизонтально
@@ -79,19 +80,19 @@ STRINGS = {
            "left_hm": "{h}ч {m}м", "left_m": "{m}м", "eta": "~{left}", "expired": "истекла {date}", "days": "{date} · {n}д",
            "no_limits": "нет данных о лимитах", "show": "Показать", "refresh": "Обновить", "quit": "Выход",
            "alert_title": "Tollgate: лимит заканчивается", "alert_reset": ", сброс через {left}", "sub_title": "Tollgate: подписка заканчивается",
-           "alerts": "Уведомления, %", "off": "Выкл", "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
+           "alerts": "Уведомлять при (95% - всегда)", "language": "Язык", "theme": "Тема", "light": "Светлая", "dark": "Тёмная", "scale": "Масштаб", "win_5h": "5ч", "win_1d": "1д", "win_1w": "1н", "h": "ч", "date": "%d.%m"},
     "en": {"no_data": "no data", "ago_s": "{n}s", "ago_m": "{n}m",
            "ago_h": "{n}h", "ago_d": "{n}d", "error": "error: {e}", "reset": "reset", "left_dh": "{d}d {h}h",
            "left_hm": "{h}h {m}m", "left_m": "{m}m", "eta": "~{left}", "expired": "expired {date}", "days": "{date} · {n}d",
            "no_limits": "no limit data", "show": "Show", "refresh": "Refresh", "quit": "Quit",
            "alert_title": "Tollgate: limit running out", "alert_reset": ", resets in {left}", "sub_title": "Tollgate: subscription ending",
-           "alerts": "Alerts, %", "off": "Off", "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
+           "alerts": "Alert at (95% - always)", "language": "Language", "theme": "Theme", "light": "Light", "dark": "Dark", "scale": "Scale", "win_5h": "5h", "win_1d": "1d", "win_1w": "1w", "h": "h", "date": "%b %d"},
     "zh": {"no_data": "无数据", "ago_s": "{n}秒", "ago_m": "{n}分",
            "ago_h": "{n}时", "ago_d": "{n}天", "error": "错误: {e}", "reset": "已重置", "left_dh": "{d}天{h}小时",
            "left_hm": "{h}小时{m}分", "left_m": "{m}分", "eta": "约{left}", "expired": "已于 {date} 到期", "days": "{date} · {n}天",
            "no_limits": "无额度数据", "show": "显示", "refresh": "刷新", "quit": "退出",
            "alert_title": "Tollgate: 额度即将用完", "alert_reset": "，{left}后重置", "sub_title": "Tollgate: 订阅即将到期",
-           "alerts": "通知, %", "off": "关闭", "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
+           "alerts": "提醒阈值（95% 始终提醒）", "language": "语言", "theme": "主题", "light": "浅色", "dark": "深色", "scale": "缩放", "win_5h": "5时", "win_1d": "1天", "win_1w": "1周", "h": "时", "date": "%m月%d日"},
 }
 LANG = "ru"  # текущий язык, задаётся из state.json и в настройках
 
@@ -508,7 +509,7 @@ def monitor_dpi():
 def row_style(pct):
     """Цвет полоски, подсвечена ли строка, фон строки - по проценту заполнения окна."""
     color = bar_color(pct)
-    hot = pct >= THRESHOLDS[0]
+    hot = pct >= ALERT_AT  # подсветка - с первого порога уведомлений
     return color, hot, ALERT_BG[color] if hot else BG
 
 
@@ -517,7 +518,7 @@ class Widget:
     ANIM_FRAMES, ANIM_MS = 12, 25  # анимация полоски: ~0.3 с
 
     def __init__(self):
-        global LANG, SCALE, DPI, THRESHOLDS
+        global LANG, SCALE, DPI, ALERT_AT
         self.root = tk.Tk()
         self.root.withdraw()  # на старте показываем только иконку в трее
         self.root.overrideredirect(True)  # без рамки и заголовка
@@ -550,8 +551,7 @@ class Widget:
         self.pinned = state.get("pinned", False)
         LANG = state.get("lang") if state.get("lang") in LANGS else "ru"
         SCALE = state.get("scale") if state.get("scale") in SCALES else 1.0
-        alerts = tuple(state.get("alerts", THRESHOLDS))  # в JSON - список
-        THRESHOLDS = alerts if alerts in ALERT_PRESETS else (80, 95)
+        ALERT_AT = state.get("alert") if state.get("alert") in ALERT_LEVELS else 80
         apply_theme(state.get("theme") if state.get("theme") in THEMES else "light")
         self.root.configure(bg=BG)  # фон окна - уже сохранённой темы
         self.root.bind("<Escape>", lambda e: self.hide())
@@ -645,7 +645,7 @@ class Widget:
     def _save_state(self):
         try:
             TOLLGATE_DIR.mkdir(exist_ok=True)
-            STATE_FILE.write_text(json.dumps({"pinned": self.pinned, "lang": LANG, "theme": THEME, "scale": SCALE, "alerts": THRESHOLDS}), encoding="utf-8")
+            STATE_FILE.write_text(json.dumps({"pinned": self.pinned, "lang": LANG, "theme": THEME, "scale": SCALE, "alert": ALERT_AT}), encoding="utf-8")
         except OSError:
             pass  # не сохранилось - настройки работают до перезапуска
 
@@ -694,11 +694,14 @@ class Widget:
         self._save_state()
         self.refresh()
 
-    def set_alerts(self, thresholds):
-        """Пороги уведомлений; вид панели не меняется - пересборка не нужна, действует со следующего обновления."""
-        global THRESHOLDS
-        THRESHOLDS = thresholds
+    def set_alert(self, level):
+        """Первый порог уведомлений (70/80/90). С него же подсвечиваются строки - перерисовать их сразу."""
+        global ALERT_AT
+        ALERT_AT = level
         self._save_state()
+        for screen in self.screens.values():  # строки готового экрана лимитов
+            for r in screen["rows"]:
+                self._paint_row(r, r["value"], r["value"])
 
     def set_scale(self, scale):
         global SCALE
@@ -741,12 +744,12 @@ class Widget:
         for name, windows, _, (_, until_text, until_color) in data:
             for label, pct, left, _ in windows:
                 key = (name, label)
-                level = max((t for t in THRESHOLDS if pct >= t), default=0)
+                level = max((t for t in (ALERT_AT, ALERT_ALWAYS) if pct >= t), default=0)
                 if level > self.alerted.get(key, 0):
                     hot.append(f"{name} {win_name(label)}: {pct}%" + (T("alert_reset", left=left) if left else ""))
                 self.alerted[key] = level  # после сброса окна уровень падает и уведомление сработает снова
             soon = until_color == AMBER  # load_plan красит срок жёлтым за 3 дня до окончания
-            if soon and THRESHOLDS and not self.alerted.get((name, "plan")):  # «Выкл» глушит и это уведомление
+            if soon and not self.alerted.get((name, "plan")):
                 subs.append(f"{name}: {until_text}")
             self.alerted[(name, "plan")] = soon  # после продления флаг сбросится - в следующий раз уведомит снова
         if subs:
@@ -895,8 +898,7 @@ class Widget:
         row = self._choice(row, T("language"), [(c, t, c) for c, t in LANGS.items()], LANG, self.set_lang)
         row = self._choice(row, T("theme"), [(n, T(n), None) for n in THEMES], THEME, self.set_theme)
         row = self._choice(row, T("scale"), [(k, f"{round(k * 100)}%", "en") for k in SCALES], SCALE, self.set_scale)
-        self._choice(row, T("alerts"), [(t, "/".join(map(str, t)) or T("off"), "en" if t else None) for t in ALERT_PRESETS],
-                     THRESHOLDS, self.set_alerts, last=True)
+        self._choice(row, T("alerts"), [(a, f"{a}%", "en") for a in ALERT_LEVELS], ALERT_AT, self.set_alert, last=True)
 
     def _show_screen(self, key, data):
         """Показать экран текущего вида. Готовый с тем же ключом раскладки - просто подменить (быстро, без
