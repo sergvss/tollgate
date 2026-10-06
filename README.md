@@ -154,10 +154,12 @@ For the forecast, Tollgate keeps 7 days of limit readings in `~/.tollgate/histor
 | | Epic | What it brings |
 |---|---|---|
 | ✅ | Monitoring and alerts | Limits, forecast, thresholds, subscription end |
-| ⏳ | Token savings | What burns your limit: usage by project and session, cache hit rate, "expensive" actions, hints while you work |
+| ⏳ | Token savings | What burns your limit: usage by project and session, tracking a chosen folder, cache hit rate, "expensive" actions, hints while you work |
 | ⏳ | Request classification | What your requests are spent on - without storing their text |
 | ⏳ | A toll gate for secrets | A hook that keeps keys, passwords and personal data out of the model |
 | ⏳ | Distribution | A standalone `.exe` and GitHub Releases - no Python needed |
+| ⏳ | API keys and other platforms | OpenRouter account and its keys, or a single key on a platform you pick: spend, limit, balance (opt-in, the key is stored encrypted) |
+| ⏳ | Reports | A daily or weekly usage summary delivered to your GitHub repository, email or webhook - numbers only, opt-in |
 
 In detail, with done criteria - [TODO.md](TODO.md) (in Russian). Release history - [CHANGELOG.md](CHANGELOG.md).
 
