@@ -2,7 +2,7 @@
 
 Документ для передачи разработки: что где лежит, как устроено, какие решения уже приняты и почему. Читать вместе с [README](README.md) (для пользователя), [TODO](TODO.md) (план) и [CHANGELOG](CHANGELOG.md) (история версий).
 
-Текущая версия: **0.7.0** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
+Текущая версия: **0.8.0** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
 
 ---
 
@@ -13,7 +13,7 @@
 Долгосрочная цель - «шлагбаум» между пользователем и ИИ: учёт расхода → экономия токенов → классификация запросов → блокировка чувствительных запросов (см. TODO.md, эпики E3-E5).
 
 **Принципы (не нарушать):**
-- только локальные данные: сам Tollgate в сеть ничего не отправляет; исключение - раз в 5 минут фоновый `claude -p /usage`, запрос делает Claude Code;
+- только локальные данные: сам Tollgate в сеть ничего не отправляет; исключения - раз в 5 минут фоновое чтение лимитов (`claude -p /usage` и `codex app-server` → `account/rateLimits/read`), запросы делают сами Claude Code и Codex;
 - токены входа Claude и Codex не используются для запросов к API (из `~/.codex/auth.json` декодируется только открытая часть `id_token`);
 - чужие настройки не перетираются (статус-строка ставится, только если её нет; перед правкой бэкап).
 
@@ -61,7 +61,9 @@
 | Лимиты Claude (запасной) | `~/.claude.json` → `cachedUsageUtilization` | `utilization.five_hour / seven_day` → `utilization`, `resets_at` (ISO); `fetchedAtMs`. Claude Code обновляет кэш редко (раз в часы) |
 | | `read_claude()` берёт из двух источников тот, что свежее | |
 | Обновление кэша Claude | `refresh_claude_usage()`: `claude -p /usage --no-session-persistence --strict-mcp-config --setting-sources project --no-chrome` из `~/.tollgate`, без окна, ~4 с | Claude Code запрашивает `GET /api/oauth/usage` и пишет `cachedUsageUtilization` (не чаще раза в минуту). К модели не обращается. `--bare` не подходит - в нём нет входа по подписке |
-| Лимиты Codex | самый новый `~/.codex/sessions/**/*.jsonl`, последнее событие с `rate_limits` (читается хвост файла 512 КБ) | `payload.rate_limits.primary / secondary` → `used_percent`, `window_minutes` (300 = 5ч, 1440 = 1д, 10080 = 1н), `resets_at` |
+| Лимиты Codex (свежие) | `~/.tollgate/codex-usage.json` - пишет `refresh_codex_usage()`: запускает `codex app-server` (JSON-RPC построчно через stdio, без окна), `initialize` → `initialized` → `account/rateLimits/read`, ~1 с; процесс убивается сразу после ответа или через 30 с | ответ `rateLimits.primary / secondary` → `usedPercent`, `windowDurationMins`, `resetsAt` - сохраняется в формате логов (`used_percent` и т.д.). Схема протокола: `codex app-server generate-json-schema --out DIR` |
+| | `read_codex()` берёт из запроса и логов то, что свежее | |
+| Лимиты Codex (логи) | самый новый `~/.codex/sessions/**/*.jsonl`, последнее событие с `rate_limits` (читается хвост файла 512 КБ) | `payload.rate_limits.primary / secondary` → `used_percent`, `window_minutes` (300 = 5ч, 1440 = 1д, 10080 = 1н), `resets_at` |
 | Тариф Claude | `~/.claude.json` → `oauthAccount.organizationType` | `claude_pro` → `Pro` |
 | Срок подписки Claude | `oauthAccount.subscriptionCreatedAt` | Даты окончания локально нет - **оценка**: ближайшее месячное продление |
 | Тариф и срок Codex | `~/.codex/auth.json` → `tokens.id_token` (JWT, только payload) → claim `https://api.openai.com/auth` | `chatgpt_plan_type`, `chatgpt_subscription_active_until` - **точная** дата |
@@ -86,7 +88,7 @@ Codex обновляет `rate_limits` только когда им пользу
 - `__init__`: окно без рамки (`overrideredirect`), поверх всех; загрузка `state.json`; иконка трея (`pystray`) в отдельном потоке - команды из трея идут в tk через `queue` (`_poll` раз в 100 мс; tkinter не потокобезопасен).
 - `refresh()` раз в 30 с: читает данные → считает `_layout_key()` → если структура изменилась, `_show_screen()` (готовый экран из `self.screens` или `_build()`), иначе `_update()` на месте → трей → `_place()` → `_check_alerts()` (последним: может открыть панель и вложенно вызвать `refresh`).
 - `_tick()` раз в секунду: только тексты возраста данных, без чтения файлов.
-- `_usage_loop()` в фоновом потоке: при старте и раз в `CLAUDE_USAGE_EVERY` (5 мин) - `refresh_claude_usage()`, затем `refresh` через очередь. Кнопка обновления и пункт меню трея (`refresh_now`) будят поток сразу (`usage_now`).
+- `_usage_loop()` в фоновом потоке: при старте и раз в `CLAUDE_USAGE_EVERY` (5 мин) - `refresh_claude_usage()` и `refresh_codex_usage()`, затем `refresh` через очередь. Кнопка обновления и пункт меню трея (`refresh_now`) будят поток сразу (`usage_now`).
 
 ### Ключевая идея: реактивное обновление
 
@@ -133,6 +135,7 @@ Codex обновляет `rate_limits` только когда им пользу
 | Тесты перезаписывали настройки пользователя | Тестовый `Widget` сохранял `state.json` | В тестах подменять `tollgate.STATE_FILE` на временный файл **до** создания `Widget` |
 | При переключении лимиты ↔ настройки была видна дорисовка (до 0.6.1) | Экран каждый раз собирался заново (~60 мс, ~50 нативных окон) | Готовые экраны (`self.screens`), подмена ~20 мс; прелоадер отвергнут - при таком времени он бы только мелькал |
 | Лимиты Claude не обновлялись при работе в десктоп-приложении (до 0.6.0) | Десктоп-приложение (`entrypoint: sdk-ts`) не вызывает статус-строку, а кэш `~/.claude.json` Claude Code обновляет редко - после смены тарифа панель часами показывала старые 85% | Фоновый `claude -p /usage` раз в 5 минут - Claude Code сам обновляет кэш. Свой запрос к API с токеном отвергнут: нарушает принцип «без токенов» |
+| Лимиты Codex «не обновлялись» (до 0.8.0) | Codex пишет `rate_limits` в логи только во время работы на этом ПК; расход в облаке, ChatGPT и на других ПК не виден. На Pro Lite к тому же одно недельное окно - цифра растёт медленно | Фоновый `account/rateLimits/read` через `codex app-server` раз в 5 минут |
 | Уведомление о лимите не было видно (до 0.7.0) | Уведомления Windows в режиме «Не беспокоить» молча уходят в центр уведомлений, а автопоказ панели закрывал полэкрана и прятался через 10 с | Свои плашки в одну строку: видны всегда, висят до закрытия |
 | «Выкл» в порогах ломал отрисовку строк (0.5.0-0.6.1) | Подсветка строки (`row_style`) берёт первый порог, а «Выкл» делал список порогов пустым → `IndexError` | С 0.6.2 порог всегда есть: один на выбор (70/80/90) + всегда 95, режима «Выкл» нет. С `ALERT_AT` же начинается подсветка строк |
 | Пилюля порогов срабатывала только один раз | `_segmented` блокирует клики, пока пилюля едет, а разблокировки не было: язык/тема/масштаб всё равно пересобирают панель, пороги - нет | Флаг `busy` снимается, когда пилюля доехала |

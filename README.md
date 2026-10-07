@@ -113,11 +113,13 @@ The tray icon is two bars, Claude and Codex: each is filled to its busiest windo
 
 | What | Claude | Codex |
 |---|---|---|
-| Limits | the `~/.claude.json` cache → `cachedUsageUtilization` (refreshed by `claude -p /usage` every 5 minutes) or `~/.tollgate/claude-usage.json` (written by `statusline.py` after every reply in the terminal) - whichever is fresher | the latest `~/.codex/sessions/**/*.jsonl` → `rate_limits` event |
+| Limits | the `~/.claude.json` cache → `cachedUsageUtilization` (refreshed by `claude -p /usage` every 5 minutes) or `~/.tollgate/claude-usage.json` (written by `statusline.py` after every reply in the terminal) - whichever is fresher | `~/.tollgate/codex-usage.json` (Codex's answer to `account/rateLimits/read`, every 5 minutes) or the latest `~/.codex/sessions/**/*.jsonl` → `rate_limits` event - whichever is fresher |
 | Plan | `~/.claude.json` → `oauthAccount.organizationType` | `~/.codex/auth.json` → `id_token` → `chatgpt_plan_type` |
 | Subscription end | estimate: monthly renewal from `oauthAccount.subscriptionCreatedAt` (the end date is not stored locally) | exact: `chatgpt_subscription_active_until` |
 
 **How Claude limits stay fresh.** The desktop app and IDEs never call the status line, and Claude Code refreshes its own cache rarely. So every 5 minutes (and when you click the arrow) Tollgate runs `claude -p /usage` in the background. The request for your limits is made by Claude Code itself - the same one it makes without Tollgate. It does not reach the model and does not use up your limit.
+
+**How Codex limits stay fresh.** Codex writes its limits to its session logs only while you use it on this computer, but the limit is shared with Codex Cloud, ChatGPT and your other machines. So every 5 minutes Tollgate also asks Codex directly: it starts `codex app-server` in the background and calls `account/rateLimits/read`. Again the request is made by Codex itself, it does not reach the model, and Tollgate never reads your tokens.
 
 For the forecast, Tollgate keeps 7 days of limit readings in `~/.tollgate/history.jsonl` - percentages and timestamps only.
 
@@ -125,7 +127,7 @@ For the forecast, Tollgate keeps 7 days of limit readings in `~/.tollgate/histor
 
 ## What Tollgate never does
 
-- **Never sends your data.** Tollgate itself makes no network requests. The only one is `claude -p /usage`, and Claude Code makes it.
+- **Never sends your data.** Tollgate itself makes no network requests. The only ones are the limit reads - `claude -p /usage` and Codex's `account/rateLimits/read` - and Claude Code and Codex make them.
 - **Never reads login tokens.** From `~/.codex/auth.json` only the public part of `id_token` (the subscription fields) is decoded; the tokens themselves are never used or passed anywhere. `~/.claude/.credentials.json` is not read at all.
 - **Never stores your prompts.** The history holds percentages and timestamps only.
 - **Never overwrites your settings.** The status line is installed only if you have none; every edit of `settings.json` is preceded by a backup.
@@ -143,7 +145,7 @@ For the forecast, Tollgate keeps 7 days of limit readings in `~/.tollgate/histor
 ## Limitations
 
 - Windows 10/11 only.
-- Codex updates its limits only while you use it, so its data can be old (the age is shown in the panel).
+- Fresh Codex limits need `codex` in `PATH` (the official installer puts it there). Without it, Codex data comes only from its session logs, which are written only while you use Codex on this computer.
 - Auto-refresh of Claude limits needs `claude` in `PATH` (the official installer puts it there). Without it, Claude data is refreshed only by the terminal status line and Claude Code's rare cache updates.
 - If a limit window has already reset and there is no fresh data yet, it shows 0% and "reset".
 

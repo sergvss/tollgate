@@ -23,6 +23,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(tollgate, "CLAUDE_JSON", tmp_path / ".claude.json")
     monkeypatch.setattr(tollgate, "CLAUDE_STATUSLINE", tmp_path / ".tollgate" / "claude-usage.json")
     monkeypatch.setattr(tollgate, "CODEX_SESSIONS", tmp_path / ".codex" / "sessions")
+    monkeypatch.setattr(tollgate, "CODEX_USAGE", tmp_path / ".tollgate" / "codex-usage.json")
     monkeypatch.setattr(tollgate, "STATE_FILE", tmp_path / ".tollgate" / "state.json")  # не трогать настройки пользователя
     monkeypatch.setattr(tollgate, "LANG", "ru")
     return tmp_path

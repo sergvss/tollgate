@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import base64
 import ctypes
@@ -30,6 +30,7 @@ CLAUDE_JSON = HOME / ".claude.json"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 TOLLGATE_DIR = HOME / ".tollgate"
 CLAUDE_STATUSLINE = TOLLGATE_DIR / "claude-usage.json"  # пишет statusline.py
+CODEX_USAGE = TOLLGATE_DIR / "codex-usage.json"  # пишет refresh_codex_usage
 STATE_FILE = TOLLGATE_DIR / "state.json"  # состояние виджета: пин, язык, тема, масштаб
 REFRESH_MS = 30_000  # период обновления данных
 CLAUDE_USAGE_EVERY = 5 * 60  # как часто просить Claude Code обновить лимиты (claude -p /usage), с
@@ -146,6 +147,51 @@ def refresh_claude_usage():
     return True
 
 
+def refresh_codex_usage():
+    """Спросить у Codex свежие лимиты: `codex app-server` (JSON-RPC построчно через stdio), метод account/rateLimits/read.
+    Запрос к OpenAI делает сам Codex, к модели он не идёт; Tollgate токены не читает. Сохраняет в CODEX_USAGE
+    в формате логов сессий. Логи Codex пишет, только пока им пользуются, - а лимит тратится и в облаке, и на других ПК."""
+    exe = shutil.which("codex")
+    if not exe:
+        return False
+    TOLLGATE_DIR.mkdir(exist_ok=True)
+    try:
+        proc = subprocess.Popen([exe, "app-server"], cwd=TOLLGATE_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    except OSError:
+        return False
+    killer = threading.Timer(30, proc.kill)  # завис - через 30 с прервать, чтение stdout тогда закончится
+    killer.start()
+
+    def send(msg):
+        proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    try:
+        send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "tollgate", "version": __version__}}})
+        for raw in proc.stdout:
+            msg = json.loads(raw)
+            if msg.get("id") == 1:  # рукопожатие прошло - можно спрашивать
+                send({"method": "initialized"})
+                send({"id": 2, "method": "account/rateLimits/read", "params": None})
+            elif msg.get("id") == 2:
+                rl = (msg.get("result") or {}).get("rateLimits")  # ошибка - result нет
+                if not rl:
+                    return False
+                limits = {k: {"used_percent": w["usedPercent"], "window_minutes": w.get("windowDurationMins"), "resets_at": w.get("resetsAt")}
+                          for k in ("primary", "secondary") if (w := rl.get(k))}
+                tmp = CODEX_USAGE.with_suffix(".tmp")  # атомарная запись: виджет не прочитает половину файла
+                tmp.write_text(json.dumps({"saved_at": time.time(), "rate_limits": limits}), encoding="utf-8")
+                tmp.replace(CODEX_USAGE)
+                return True
+        return False
+    except (OSError, ValueError, KeyError):
+        return False
+    finally:
+        killer.cancel()
+        proc.kill()
+
+
 def read_claude():
     """Возвращает (список окон, время получения данных): свежее из статус-строки или кэша Claude Code."""
     try:
@@ -182,7 +228,29 @@ def read_claude_cache():
     return windows, fetched / 1000 if fetched else None
 
 
+def codex_windows(rl):
+    """Окна из rate_limits Codex (формат логов сессий): [(имя, %, сброс)]."""
+    return [(window_label(w.get("window_minutes")), w.get("used_percent") or 0, w.get("resets_at"))
+            for w in (rl.get("primary"), rl.get("secondary")) if w]
+
+
 def read_codex():
+    """Возвращает (список окон, время данных): свежее из запроса к Codex (refresh_codex_usage) или из логов сессий."""
+    try:
+        fresh = read_codex_cache()
+    except (OSError, ValueError):  # codex не установлен или запроса ещё не было
+        fresh = ([], None)
+    logs = read_codex_logs()
+    return fresh if (fresh[1] or 0) >= (logs[1] or 0) else logs
+
+
+def read_codex_cache():
+    """Лимиты, которые refresh_codex_usage сохраняет после запроса к Codex."""
+    data = json.loads(CODEX_USAGE.read_text(encoding="utf-8"))
+    return codex_windows(data.get("rate_limits") or {}), data.get("saved_at")
+
+
+def read_codex_logs():
     """Возвращает (список окон, время записи) из самого свежего лога сессии Codex."""
     files = sorted(CODEX_SESSIONS.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     for f in files[:5]:  # в самой новой сессии лимитов может ещё не быть - смотрим несколько
@@ -199,13 +267,8 @@ def read_codex():
             rl = (rec.get("payload") or {}).get("rate_limits") or rec.get("rate_limits")
             if not rl:
                 continue
-            windows = []
-            for key in ("primary", "secondary"):
-                w = rl.get(key)
-                if w:
-                    windows.append((window_label(w.get("window_minutes")), w.get("used_percent") or 0, w.get("resets_at")))
             ts = parse_iso(rec["timestamp"].replace("Z", "+00:00")) if rec.get("timestamp") else f.stat().st_mtime
-            return windows, ts
+            return codex_windows(rl), ts
     return [], None
 
 
@@ -579,9 +642,10 @@ class Widget:
         return int(v * DPI * SCALE)
 
     def _usage_loop(self):
-        """Фоновый поток: при старте и раз в 5 минут (или сразу по кнопке) обновить лимиты Claude, потом перечитать данные."""
+        """Фоновый поток: при старте и раз в 5 минут (или сразу по кнопке) обновить лимиты Claude и Codex, потом перечитать данные."""
         while True:
-            if refresh_claude_usage():
+            claude, codex = refresh_claude_usage(), refresh_codex_usage()
+            if claude or codex:
                 self.cmds.put(self.refresh)  # tkinter - только из своего потока
             self.usage_now.wait(CLAUDE_USAGE_EVERY)
             self.usage_now.clear()
