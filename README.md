@@ -105,7 +105,7 @@ Cannot see the icon? It is hidden under the "^" arrow in the tray: drag it onto 
 | Gear | Settings, in the same window |
 | Pin | Pin the panel |
 
-The tray icon is two bars, Claude and Codex: each is filled to its busiest window and coloured green / amber / red. Data is re-read every 30 seconds.
+The tray icon is two bars, Claude and Codex: each shows its shortest window (5h) - the one that decides whether you can work right now - coloured green / amber / red. If a longer window is almost used up (95%+), the bar shows that one instead. The tooltip lists every window. Data is re-read every 30 seconds.
 
 ---
 

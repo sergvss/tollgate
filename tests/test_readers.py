@@ -163,3 +163,14 @@ def test_load_plan_colors(home):
 def test_load_plan_without_date_or_file(home):
     assert tg.load_plan(lambda: ("Pro", None, False)) == ("Pro", None, None)
     assert tg.load_plan(tg.read_codex_plan) == (None, None, None)  # auth.json нет - тариф не показываем
+
+
+@pytest.mark.parametrize("windows, pct", [
+    ([("5h", 10, "1ч"), ("1w", 50, "3д")], 10),  # недельные 50% не красят иконку, если 5ч почти пусто
+    ([("5h", 10, "1ч"), ("1w", 97, "3д")], 97),  # неделя почти исчерпана - работать нельзя, показать её
+    ([("1w", 4, "6д")], 4),  # у Codex Pro Lite одно недельное окно
+    ([("1w", 30, "6д"), ("3h", 60, "1ч")], 60),  # порядок окон не важен
+    ([], None),
+])
+def test_tray_pct(windows, pct):
+    assert tg.tray_pct(windows) == pct

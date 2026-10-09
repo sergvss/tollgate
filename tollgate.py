@@ -4,7 +4,7 @@
 - Claude: ~/.tollgate/claude-usage.json (пишет statusline.py) или кэш ~/.claude.json - что свежее
 - Codex: последний ~/.codex/sessions/**/*.jsonl -> последнее событие с rate_limits
 """
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 import base64
 import ctypes
@@ -122,6 +122,24 @@ def window_label(minutes):
     if minutes == 1440:
         return "1d"
     return f"{minutes // 60}h" if minutes else "?"
+
+
+def window_minutes(label):
+    """Длина окна в минутах по каноническому имени: 1w -> 10080, 1d -> 1440, 5h -> 300; неизвестное - самое длинное."""
+    if label == "1w":
+        return 10080
+    if label == "1d":
+        return 1440
+    return int(label[:-1]) * 60 if label[:-1].isdigit() else 10 ** 9
+
+
+def tray_pct(windows):
+    """Процент для полоски провайдера в трее: самое короткое окно (5ч) - оно решает, можно ли работать прямо сейчас.
+    Но если какое-то окно почти исчерпано (от 95%), показать его: иначе при упоре в недельный лимит полоска была бы зелёной."""
+    if not windows:
+        return None
+    worst = max(p for _, p, *_ in windows)
+    return worst if worst >= ALERT_ALWAYS else min(windows, key=lambda w: window_minutes(w[0]))[1]
 
 
 def parse_iso(s):
@@ -1251,8 +1269,8 @@ class Widget:
         if self.view == "limits":
             self.root.update_idletasks()
             self.limits_size = (self.card.winfo_reqwidth(), self.card.winfo_reqheight())
-        # трей: иконка по максимальному окну каждого провайдера + подсказка с цифрами - только при изменениях
-        pcts = [max((p for _, p, *_ in w), default=None) for _, w, _, _ in data]
+        # трей: иконка по короткому окну каждого провайдера (tray_pct) + подсказка с цифрами - только при изменениях
+        pcts = [tray_pct(w) for _, w, _, _ in data]
         tip = "\n".join(f"{n}: " + (", ".join(f"{win_name(l)} {p}%" for l, p, *_ in w) or T("no_data")) for n, w, _, _ in data)
         if (pcts, tip) != self.tray_state:
             self.icon.icon = tray_image(pcts)

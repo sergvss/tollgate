@@ -2,7 +2,7 @@
 
 Документ для передачи разработки: что где лежит, как устроено, какие решения уже приняты и почему. Читать вместе с [README](README.md) (для пользователя), [TODO](TODO.md) (план) и [CHANGELOG](CHANGELOG.md) (история версий).
 
-Текущая версия: **0.8.0** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
+Текущая версия: **0.8.1** (`__version__` в `tollgate.py`). Репозиторий: https://github.com/sergvss/tollgate
 
 ---
 
